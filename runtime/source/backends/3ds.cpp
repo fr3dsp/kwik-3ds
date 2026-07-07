@@ -41,6 +41,17 @@ static void klog(const char* fmt, ...) {
     std::fflush(g_klog_file);
 }
 
+void render_debug_log(const char* fmt, ...) {
+    klog_open();
+    if (!g_klog_file) return;
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(g_klog_file, fmt, args);
+    va_end(args);
+    std::fputc('\n', g_klog_file);
+    std::fflush(g_klog_file);
+}
+
 enum { MTX_MODELVIEW = 0, MTX_PROJECTION = 1, MTX_TEXTURE = 2, MTX_MODE_COUNT = 3 };
 
 static DVLB_s* g_vshader_dvlb = nullptr;
@@ -279,7 +290,7 @@ static unsigned int create_texture(int w, int h, bool as_target) {
     C3D_TexSetWrap(&t.tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
     C3D_TexSetFilter(&t.tex, GPU_NEAREST, GPU_NEAREST);
     if (as_target) {
-        t.rt = C3D_RenderTargetCreateFromTex(&t.tex, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH16);
+        t.rt = C3D_RenderTargetCreateFromTex(&t.tex, GPU_TEXFACE_2D, 0, -1);
         if (!t.rt) klog("C3D_RenderTargetCreateFromTex FAILED w=%d h=%d pw=%d ph=%d", w, h, t.pw, t.ph);
     }
     t.alive = true;
@@ -584,13 +595,34 @@ static C3D_Tex* white_c3dtex() {
     return t ? &t->tex : nullptr;
 }
 
+static long g_fade_log_count = 0;
+
 void render_draw_rectangle_color(double x1, double y1, double x2, double y2, unsigned int c1,
                                  unsigned int c2, unsigned int c3, unsigned int c4, bool outline) {
+    if (c1 == 0 && c2 == 0 && c3 == 0 && c4 == 0 && x1 == 0 && y1 == 0 && !outline &&
+        g_fade_log_count < 400) {
+        g_fade_log_count++;
+        klog("fade-rect #%ld: frame=%ld xy=(%.1f,%.1f)-(%.1f,%.1f) alpha=%.3f gui=(%d,%d) "
+             "xf=(ox=%.1f,oy=%.1f,sx=%.3f,sy=%.3f) blend=(src=%d,dst=%d,asrc=%d,adst=%d) "
+             "colormask=(%d,%d,%d,%d) fog_on=%d",
+             g_fade_log_count, g_frame_no, x1, y1, x2, y2, g_alpha, g_gui_w, g_gui_h, g_xf.ox,
+             g_xf.oy, g_xf.sx, g_xf.sy, g_blend_src, g_blend_dst, g_blend_asrc, g_blend_adst,
+             g_colormask[0] ? 1 : 0, g_colormask[1] ? 1 : 0, g_colormask[2] ? 1 : 0,
+             g_colormask[3] ? 1 : 0, g_fog_on ? 1 : 0);
+    }
+    bool is_fade = (c1 == 0 && c2 == 0 && c3 == 0 && c4 == 0 && x1 == 0 && y1 == 0 && !outline);
     if (outline) {
         render_draw_line(x1, y1, x2, y1, 1, c1, c2);
         render_draw_line(x2, y1, x2, y2, 1, c2, c3);
         render_draw_line(x2, y2, x1, y2, 1, c3, c4);
         render_draw_line(x1, y2, x1, y1, 1, c4, c1);
+        return;
+    }
+    if (is_fade) {
+        Vtx v[4] = {mkv(x1, y1, 0xFF00FF, 1.0), mkv(x2 + 1, y1, 0xFF00FF, 1.0),
+                   mkv(x2 + 1, y2 + 1, 0xFF00FF, 1.0), mkv(x1, y2 + 1, 0xFF00FF, 1.0)};
+        const u16 idx[6] = {0, 1, 2, 0, 2, 3};
+        submit(v, 4, idx, 6, white_c3dtex());
         return;
     }
     Vtx v[4] = {mkv(x1, y1, c1, g_alpha), mkv(x2 + 1, y1, c2, g_alpha),
@@ -828,7 +860,7 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     klog("frame arena: %p size=%zu", (void*)g_frame_arena, g_frame_arena_size);
 
     int phys_w = 400, phys_h = 240;
-    g_screen_rt = C3D_RenderTargetCreate(phys_h, phys_w, GPU_RB_RGBA8, GPU_RB_DEPTH16);
+    g_screen_rt = C3D_RenderTargetCreate(phys_h, phys_w, GPU_RB_RGBA8, -1);
     klog("screen render target: %p", (void*)g_screen_rt);
     if (!g_screen_rt) klog("C3D_RenderTargetCreate FAILED for screen target");
     C3D_RenderTargetSetOutput(g_screen_rt, GFX_TOP, GFX_LEFT,
@@ -923,6 +955,14 @@ void render_begin_frame() {
 }
 
 void render_begin_gui() {
+    g_target_stack.clear();
+    g_xf_stack.clear();
+    RtTexture* t = tex_of(g_app_tex);
+    if (t && t->rt) {
+        C3D_FrameDrawOn(t->rt);
+        C3D_SetViewport(0, 0, t->w, t->h);
+        set_surface_ortho(t->w, t->h);
+    }
     g_xf.ox = 0;
     g_xf.oy = 0;
     g_xf.sx = g_gui_w > 0 ? (double)(g_fbo_w > 0 ? g_fbo_w : g_gui_w) / g_gui_w : 1;

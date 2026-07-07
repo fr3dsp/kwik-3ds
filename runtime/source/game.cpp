@@ -62,12 +62,29 @@ std::string kwik_save_path(const std::string& rel) {
 }
 
 std::string kwik_resolve_read(const std::string& rel) {
-    if (rel.empty() || rel[0] == '/' || g_save_dir.empty()) return rel;
-    std::string in_save = g_save_dir + "/" + rel;
-    std::FILE* f = std::fopen(in_save.c_str(), "rb");
-    if (f) {
-        std::fclose(f);
-        return in_save;
+    if (rel.empty() || rel[0] == '/') return rel;
+    if (!g_save_dir.empty()) {
+        std::string in_save = g_save_dir + "/" + rel;
+        std::FILE* f = std::fopen(in_save.c_str(), "rb");
+        if (f) {
+            std::fclose(f);
+            return in_save;
+        }
+    }
+    {
+        std::FILE* f = std::fopen(rel.c_str(), "rb");
+        if (f) {
+            std::fclose(f);
+            return rel;
+        }
+    }
+    if (!g_game_dir.empty()) {
+        std::string in_game_dir = g_game_dir + "/" + rel;
+        std::FILE* f = std::fopen(in_game_dir.c_str(), "rb");
+        if (f) {
+            std::fclose(f);
+            return in_game_dir;
+        }
     }
     return rel;
 }
@@ -2818,6 +2835,13 @@ static void draw_world() {
             if (a.depth != b.depth) return a.depth > b.depth;
             return a.order > b.order;
         });
+        static long s_gui_order_log = 0;
+        if (kind == EVK_DRAW_GUI && s_gui_order_log < 40) {
+            s_gui_order_log++;
+            for (const DrawItem& it : gitems)
+                render_debug_log("gui-order kind=%d obj=%s depth=%.1f id=%lld", kind,
+                                 g_objects_rt[it.inst->object_index].name, it.depth, it.order);
+        }
         for (const DrawItem& it : gitems) {
             if (it.inst->dead) continue;
             fire(it.inst, kind, 0);
@@ -3119,9 +3143,9 @@ int run_game(const GameTables& tables) {
     g_game_dir = tables.game_dir ? tables.game_dir : "";
     g_assets_path = tables.assets_path ? tables.assets_path : "Assets.dat";
 #ifdef __3DS__
-    g_game_dir.clear();
     std::string title = tables.game_name && *tables.game_name ? tables.game_name : "kwik_game";
     g_assets_path = "sdmc:/3ds/" + title + "/Assets.dat";
+    g_game_dir = "sdmc:/3ds/" + title;
 #endif
     if (tables.room_count <= 0) return 1;
 

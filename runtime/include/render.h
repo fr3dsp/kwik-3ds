@@ -99,4 +99,6 @@ void render_draw_triangle(double x1, double y1, double x2, double y2, double x3,
                           unsigned int c1, unsigned int c2, unsigned int c3, bool outline);
 void render_draw_point(double x, double y, unsigned int c);
 
+void render_debug_log(const char* fmt, ...);
+
 }

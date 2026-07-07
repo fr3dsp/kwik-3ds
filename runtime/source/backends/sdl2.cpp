@@ -956,4 +956,6 @@ void render_shutdown() {
     SDL_Quit();
 }
 
+void render_debug_log(const char*, ...) {}
+
 }

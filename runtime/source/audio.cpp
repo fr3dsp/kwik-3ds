@@ -152,7 +152,12 @@ static Voice* start_voice(int what, bool loop) {
                 size_t slash = path->find_last_of('/');
                 std::string base = slash == std::string::npos ? *path : path->substr(slash + 1);
                 if (!read_file_bytes("mus/" + base, bytes))
-                    if (!read_file_bytes("../mus/" + base, bytes)) read_file_bytes(base, bytes);
+                    if (!read_file_bytes("../mus/" + base, bytes))
+                        if (!read_file_bytes(base, bytes) && !g_game_dir.empty()) {
+                            if (!read_file_bytes(g_game_dir + "/" + *path, bytes))
+                                if (!read_file_bytes(g_game_dir + "/mus/" + base, bytes))
+                                    read_file_bytes(g_game_dir + "/" + base, bytes);
+                        }
             }
             if (!bytes.empty())
                 ok = init_voice_pcm(v, bytes.data(), (unsigned)bytes.size(), 0);
@@ -175,7 +180,12 @@ static Voice* start_voice(int what, bool loop) {
             if (!read_file_bytes(fn, bytes)) {
                 size_t dot = fn.find_last_of('.');
                 std::string base = dot == std::string::npos ? fn : fn.substr(0, dot);
-                if (!read_file_bytes(base + ".ogg", bytes)) read_file_bytes(base + ".wav", bytes);
+                if (!read_file_bytes(base + ".ogg", bytes))
+                    if (!read_file_bytes(base + ".wav", bytes) && !g_game_dir.empty()) {
+                        if (!read_file_bytes(g_game_dir + "/" + fn, bytes))
+                            if (!read_file_bytes(g_game_dir + "/" + base + ".ogg", bytes))
+                                read_file_bytes(g_game_dir + "/" + base + ".wav", bytes);
+                    }
             }
             if (!bytes.empty()) ok = init_voice_pcm(v, bytes.data(), (unsigned)bytes.size(), 0);
         }
