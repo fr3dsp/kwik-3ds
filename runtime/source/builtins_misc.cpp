@@ -91,6 +91,8 @@ void kwik_set_program_args(int argc, char** argv) {
     g_prog_argv = argv;
 }
 
+const char* kwik_program_argv0() { return g_prog_argc > 0 ? g_prog_argv[0] : nullptr; }
+
 GMLFN(parameter_count) {
     (void)self; (void)args; (void)argc;
     return Value((double)(g_prog_argc > 0 ? g_prog_argc - 1 : 0));

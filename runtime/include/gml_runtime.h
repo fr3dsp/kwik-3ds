@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -345,6 +350,7 @@ bool kwik_sprite_size(int spr, int& w, int& h);
 Value kwik_missing(Instance* self, const char* name);
 
 void kwik_set_program_args(int argc, char** argv);
+const char* kwik_program_argv0();
 
 int run_game(const GameTables& tables);
 

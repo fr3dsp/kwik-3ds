@@ -3118,10 +3118,22 @@ int run_game(const GameTables& tables) {
     g_script_entry_count = tables.script_count;
     g_game_dir = tables.game_dir ? tables.game_dir : "";
     g_assets_path = tables.assets_path ? tables.assets_path : "Assets.dat";
+#ifdef __3DS__
+    g_game_dir.clear();
+    std::string exe_dir = "sdmc:/3ds";
+    if (const char* argv0 = kwik_program_argv0()) {
+        std::string p = argv0;
+        size_t slash = p.find_last_of('/');
+        if (slash != std::string::npos) exe_dir = p.substr(0, slash);
+    }
+    g_assets_path = exe_dir + "/Assets.dat";
+#endif
     if (tables.room_count <= 0) return 1;
 
+#ifndef __3DS__
     if (!g_game_dir.empty() && chdir(g_game_dir.c_str()) != 0)
         std::fprintf(stderr, "[kwik] warning: could not chdir to %s\n", g_game_dir.c_str());
+#endif
 
     {
         std::string save_id = tables.save_id && *tables.save_id ? tables.save_id : "kwik_game";
@@ -3140,6 +3152,8 @@ int run_game(const GameTables& tables) {
             const char* userprofile = std::getenv("USERPROFILE");
             root = std::string(userprofile ? userprofile : ".") + "\\AppData\\Roaming";
         }
+#elif defined(__3DS__)
+        std::string root = "sdmc:/3ds/data";
 #else
         const char* xdg = std::getenv("XDG_DATA_HOME");
         std::string root;

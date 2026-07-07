@@ -22,3 +22,54 @@ target_link_libraries(game PRIVATE kwik_runtime)
 if(MSVC)
     set_target_properties(game PROPERTIES LINK_FLAGS "/STACK:8388608")
 endif()
+
+if(NINTENDO_3DS)
+    find_program(KWIK_3DSXTOOL 3dsxtool PATHS $ENV{DEVKITPRO}/tools/bin)
+    find_program(KWIK_SMDHTOOL smdhtool PATHS $ENV{DEVKITPRO}/tools/bin)
+    if(NOT KWIK_3DSXTOOL OR NOT KWIK_SMDHTOOL)
+        message(FATAL_ERROR "kwik: could not find 3dsxtool/smdhtool - is DEVKITPRO set correctly?")
+    endif()
+
+    if(NOT KWIK_3DS_TITLE)
+        set(KWIK_3DS_TITLE "${CMAKE_PROJECT_NAME}")
+    endif()
+    if(NOT KWIK_3DS_AUTHOR)
+        set(KWIK_3DS_AUTHOR "kwik")
+    endif()
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/icon.png)
+        set(KWIK_3DS_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon.png)
+    else()
+        set(KWIK_3DS_ICON ${KWIK_DIR}/assets/default_3ds_icon.png)
+    endif()
+
+    set(KWIK_SDCARD_APP_DIR ${CMAKE_BINARY_DIR}/sdcard/3ds/${KWIK_3DS_TITLE})
+    file(MAKE_DIRECTORY ${KWIK_SDCARD_APP_DIR})
+
+    set(KWIK_SMDH_OUT ${CMAKE_CURRENT_BINARY_DIR}/game.smdh)
+    add_custom_command(TARGET game POST_BUILD
+        COMMAND ${KWIK_SMDHTOOL} --create "${KWIK_3DS_TITLE}" "Built with kwik" "${KWIK_3DS_AUTHOR}"
+                ${KWIK_3DS_ICON} ${KWIK_SMDH_OUT}
+        BYPRODUCTS ${KWIK_SMDH_OUT})
+
+    set(KWIK_3DSX_OUT ${KWIK_SDCARD_APP_DIR}/game.3dsx)
+    add_custom_command(TARGET game POST_BUILD
+        COMMAND ${KWIK_3DSXTOOL} $<TARGET_FILE:game> ${KWIK_3DSX_OUT} --smdh=${KWIK_SMDH_OUT}
+        BYPRODUCTS ${KWIK_3DSX_OUT})
+
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat)
+        add_custom_command(TARGET game POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat ${KWIK_SDCARD_APP_DIR}/Assets.dat)
+    else()
+        message(WARNING "kwik: Assets.dat not found next to this project")
+    endif()
+
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/romfs)
+        add_custom_command(TARGET game POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/romfs ${KWIK_SDCARD_APP_DIR})
+    endif()
+
+    message(STATUS "kwik: 3DS build output: ${KWIK_3DSX_OUT}")
+    message(STATUS "kwik: copy ${CMAKE_BINARY_DIR}/sdcard/3ds onto your SD card's /3ds folder")
+endif()
