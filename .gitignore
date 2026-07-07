@@ -503,3 +503,4 @@ runtime/build/switch/build
 #Plugin
 plugin/*.bld
 /build
+/build3ds
