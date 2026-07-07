@@ -50,9 +50,25 @@ if(NINTENDO_3DS)
 
     target_link_libraries(kwik_runtime PUBLIC citro3d ctru m)
     target_compile_definitions(kwik_runtime PUBLIC __3DS__)
-    target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft -O2 -ffast-math)
+
     if(NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+    endif()
+
+    find_program(KWIK_CCACHE ccache)
+    if(KWIK_CCACHE)
+        set(CMAKE_C_COMPILER_LAUNCHER ${KWIK_CCACHE} PARENT_SCOPE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER ${KWIK_CCACHE} PARENT_SCOPE)
+        set(CMAKE_C_COMPILER_LAUNCHER ${KWIK_CCACHE})
+        set(CMAKE_CXX_COMPILER_LAUNCHER ${KWIK_CCACHE})
+        message(STATUS "kwik: using ccache for 3DS builds")
+    endif()
+
+    target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft -ffast-math)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(kwik_runtime PUBLIC -O0 -g)
+    else()
+        target_compile_options(kwik_runtime PUBLIC -O2)
     endif()
 
     return()

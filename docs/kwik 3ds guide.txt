@@ -1,0 +1,19 @@
+this is just the build commands since 3ds-dev from dkp has everything we need.
+
+DEBUG WITH CCACHE:
+
+cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && cmake --build build3ds -j$(nproc)
+
+
+RELEASE WITH CCACHE:
+
+cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && cmake --build build3ds -j$(nproc)
+
+
+DEBUG WITHOUT CCACHE:
+
+cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build3ds -j$(nproc)
+
+RELEASE WITH CCACHE:
+
+cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build3ds -j$(nproc)

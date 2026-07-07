@@ -1138,33 +1138,65 @@ bool emit_dir(const GameData& gd, const std::string& out_dir) {
             scripts_code.push_back(&e);
     }
 
-    auto write_unit = [&](const fs::path& path, const std::vector<const CodeEntry*>& entries) {
-        std::ofstream f(path, std::ios::binary);
-        f << "#include \"generated.h\"\n\nusing namespace gml;\n\n";
-        for (const CodeEntry* e : entries)
-            emit_function(f, gd, *e);
+    const size_t target_unit_bytes = 40 * 1024;
+
+    auto render_entry = [&](const CodeEntry* e) {
+        std::ostringstream oss;
+        emit_function(oss, gd, *e);
+        return oss.str();
     };
 
-    for (const auto& kv : by_object)
-        write_unit(root / "objects" / (sanitize(kv.first) + ".cpp"), kv.second);
+    auto pack_by_size = [&](const std::vector<const CodeEntry*>& entries) {
+        std::vector<std::string> rendered(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i) rendered[i] = render_entry(entries[i]);
+        std::vector<std::vector<std::string>> buckets;
+        std::vector<std::string> cur;
+        size_t cur_bytes = 0;
+        for (std::string& s : rendered) {
+            if (!cur.empty() && cur_bytes + s.size() > target_unit_bytes) {
+                buckets.push_back(std::move(cur));
+                cur.clear();
+                cur_bytes = 0;
+            }
+            cur_bytes += s.size();
+            cur.push_back(std::move(s));
+        }
+        if (!cur.empty()) buckets.push_back(std::move(cur));
+        return buckets;
+    };
 
-    const size_t chunk_size = 100;
-    for (size_t i = 0; i * chunk_size < rooms_code.size(); ++i) {
-        std::vector<const CodeEntry*> part(
-            rooms_code.begin() + i * chunk_size,
-            rooms_code.begin() + std::min(rooms_code.size(), (i + 1) * chunk_size));
-        write_unit(root / "rooms" / ("rooms_" + std::to_string(i) + ".cpp"), part);
+    auto write_bucket = [&](const fs::path& path, const std::vector<std::string>& rendered) {
+        std::ofstream f(path, std::ios::binary);
+        f << "#include \"generated.h\"\n\nusing namespace gml;\n\n";
+        for (const std::string& s : rendered) f << s;
+    };
+
+    for (const auto& kv : by_object) {
+        auto buckets = pack_by_size(kv.second);
+        if (buckets.empty()) continue;
+        if (buckets.size() == 1) {
+            write_bucket(root / "objects" / (sanitize(kv.first) + ".cpp"), buckets[0]);
+            continue;
+        }
+        for (size_t i = 0; i < buckets.size(); ++i)
+            write_bucket(
+                root / "objects" / (sanitize(kv.first) + "_" + std::to_string(i) + ".cpp"),
+                buckets[i]);
     }
-    for (size_t i = 0; i * chunk_size < scripts_code.size() || (i == 0 && scripts_code.empty());
-         ++i) {
-        std::vector<const CodeEntry*> part;
-        if (i * chunk_size < scripts_code.size())
-            part.assign(scripts_code.begin() + i * chunk_size,
-                        scripts_code.begin() +
-                            std::min(scripts_code.size(), (i + 1) * chunk_size));
-        write_unit(root / "scripts" / ("scripts_" + std::to_string(i) + ".cpp"), part);
-        if (scripts_code.empty()) break;
-    }
+
+    auto write_group = [&](const fs::path& dir, const std::string& prefix,
+                           const std::vector<const CodeEntry*>& entries) {
+        auto buckets = pack_by_size(entries);
+        if (buckets.empty()) {
+            write_bucket(dir / (prefix + "_0.cpp"), {});
+            return;
+        }
+        for (size_t i = 0; i < buckets.size(); ++i)
+            write_bucket(dir / (prefix + "_" + std::to_string(i) + ".cpp"), buckets[i]);
+    };
+
+    write_group(root / "rooms", "rooms", rooms_code);
+    write_group(root / "scripts", "scripts", scripts_code);
 
     AssetExtraction ex;
     extract_assets(gd, out_dir, ex);

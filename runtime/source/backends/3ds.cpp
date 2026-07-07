@@ -17,6 +17,8 @@ extern "C" {
 extern const u8 vshader_shbin[];
 extern const u8 vshader_shbin_end[];
 extern const u32 vshader_shbin_size;
+
+u32 __stacksize__ = 1 * 1024 * 1024;
 }
 
 namespace gml {
