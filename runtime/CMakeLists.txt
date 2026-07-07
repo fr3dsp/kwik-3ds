@@ -64,7 +64,7 @@ if(NINTENDO_3DS)
         message(STATUS "kwik: using ccache for 3DS builds")
     endif()
 
-    target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft -ffast-math)
+    target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(kwik_runtime PUBLIC -O0 -g)
     else()

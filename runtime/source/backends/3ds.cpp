@@ -960,13 +960,13 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     load_input_map();
     klog("input.ini loaded");
 
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
+    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4)) {
         klog("C3D_Init FAILED");
         return false;
     }
     klog("C3D_Init ok");
 
-    g_frame_arena_size = 4 * 1024 * 1024;
+    g_frame_arena_size = 16 * 1024 * 1024;
     g_frame_arena = (u8*)linearAlloc(g_frame_arena_size);
     g_frame_arena_offset = 0;
     klog("frame arena: %p size=%zu", (void*)g_frame_arena, g_frame_arena_size);

@@ -14,6 +14,6 @@ DEBUG WITHOUT CCACHE:
 
 cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build3ds -j$(nproc)
 
-RELEASE WITH CCACHE:
+RELEASE WITHOUT CCACHE:
 
-cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build3ds -j$(nproc)
+cmake -B build3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake -DCMAKE_BUILD_TYPE=Release && cmake --build build3ds -j$(nproc)
