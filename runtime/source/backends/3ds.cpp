@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <strings.h>
 #include <vector>
 
 extern "C" {
@@ -18,7 +20,7 @@ extern const u8 vshader_shbin[];
 extern const u8 vshader_shbin_end[];
 extern const u32 vshader_shbin_size;
 
-u32 __stacksize__ = 1 * 1024 * 1024;
+u32 __stacksize__ = 4 * 1024 * 1024;
 }
 
 namespace gml {
@@ -796,30 +798,135 @@ void render_primitive_end() {
 }
 
 
-static int gml_vk_from_hid(u32 held, int vk) {
-    switch (vk) {
-        case 37: return (held & KEY_DLEFT) ? 1 : 0;
-        case 38: return (held & KEY_DUP) ? 1 : 0;
-        case 39: return (held & KEY_DRIGHT) ? 1 : 0;
-        case 40: return (held & KEY_DDOWN) ? 1 : 0;
-        case 13: return (held & (KEY_A | KEY_START)) ? 1 : 0;
-        case 27: return (held & KEY_B) ? 1 : 0;
-        case 32: return (held & KEY_X) ? 1 : 0;
-        case 'Y': return (held & KEY_Y) ? 1 : 0;
-        case 'Q': return (held & KEY_L) ? 1 : 0;
-        case 'E': return (held & KEY_R) ? 1 : 0;
-        default: return 0;
+struct NamedBit { const char* name; u32 mask; };
+static const NamedBit kButtonNames[] = {
+    {"A", KEY_A}, {"B", KEY_B}, {"X", KEY_X}, {"Y", KEY_Y},
+    {"L", KEY_L}, {"R", KEY_R}, {"ZL", KEY_ZL}, {"ZR", KEY_ZR},
+    {"START", KEY_START}, {"SELECT", KEY_SELECT},
+    {"DPAD_UP", KEY_DUP}, {"DPAD_DOWN", KEY_DDOWN},
+    {"DPAD_LEFT", KEY_DLEFT}, {"DPAD_RIGHT", KEY_DRIGHT},
+    {"CPAD_UP", KEY_CPAD_UP}, {"CPAD_DOWN", KEY_CPAD_DOWN},
+    {"CPAD_LEFT", KEY_CPAD_LEFT}, {"CPAD_RIGHT", KEY_CPAD_RIGHT},
+    {"CSTICK_UP", KEY_CSTICK_UP}, {"CSTICK_DOWN", KEY_CSTICK_DOWN},
+    {"CSTICK_LEFT", KEY_CSTICK_LEFT}, {"CSTICK_RIGHT", KEY_CSTICK_RIGHT},
+    {"TOUCH", KEY_TOUCH},
+};
+
+struct NamedVk { const char* name; int vk; };
+static const NamedVk kKeyNames[] = {
+    {"enter", 13}, {"escape", 27}, {"space", 32},
+    {"shift", 16}, {"control", 17}, {"ctrl", 17}, {"alt", 18},
+    {"tab", 9}, {"backspace", 8},
+    {"left", 37}, {"up", 38}, {"right", 39}, {"down", 40},
+    {"home", 36}, {"end", 35}, {"pageup", 33}, {"pagedown", 34},
+    {"insert", 45}, {"delete", 46},
+    {"f1", 112}, {"f2", 113}, {"f3", 114}, {"f4", 115},
+    {"f5", 116}, {"f6", 117}, {"f7", 118}, {"f8", 119},
+    {"f9", 120}, {"f10", 121}, {"f11", 122}, {"f12", 123},
+};
+
+static const char* kDefaultInputIni =
+    "; kwik input mapping - N3DS button = keyboard key\n"
+    "; buttons: A B X Y L R ZL ZR START SELECT\n"
+    ";          DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT\n"
+    ";          CPAD_UP CPAD_DOWN CPAD_LEFT CPAD_RIGHT\n"
+    ";          CSTICK_UP CSTICK_DOWN CSTICK_LEFT CSTICK_RIGHT (New3DS)\n"
+    ";          TOUCH\n"
+    "; keys: a-z 0-9 enter escape space shift control alt tab backspace\n"
+    ";       left up right down home end pageup pagedown insert delete f1-f12\n"
+    "A = enter\n"
+    "START = enter\n"
+    "B = escape\n"
+    "X = space\n"
+    "Y = y\n"
+    "L = q\n"
+    "R = e\n"
+    "DPAD_LEFT = left\n"
+    "DPAD_UP = up\n"
+    "DPAD_RIGHT = right\n"
+    "DPAD_DOWN = down\n"
+    "CPAD_LEFT = left\n"
+    "CPAD_UP = up\n"
+    "CPAD_RIGHT = right\n"
+    "CPAD_DOWN = down\n";
+
+static u32 g_vk_mask[512];
+
+static std::string trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static u32 find_button_mask(const std::string& name) {
+    for (auto& b : kButtonNames)
+        if (strcasecmp(b.name, name.c_str()) == 0) return b.mask;
+    return 0;
+}
+
+static bool find_vk(const std::string& name, int* out_vk) {
+    if (name.size() == 1) {
+        char c = name[0];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            *out_vk = c;
+            return true;
+        }
+    }
+    for (auto& k : kKeyNames)
+        if (strcasecmp(k.name, name.c_str()) == 0) {
+            *out_vk = k.vk;
+            return true;
+        }
+    return false;
+}
+
+static void parse_input_ini(const std::string& contents) {
+    size_t pos = 0;
+    while (pos <= contents.size()) {
+        size_t nl = contents.find('\n', pos);
+        std::string line = nl == std::string::npos ? contents.substr(pos) : contents.substr(pos, nl - pos);
+        pos = nl == std::string::npos ? contents.size() + 1 : nl + 1;
+
+        line = trim(line);
+        if (line.empty() || line[0] == ';' || line[0] == '#' || line[0] == '[') continue;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        u32 mask = find_button_mask(key);
+        int vk = 0;
+        if (mask != 0 && find_vk(val, &vk) && vk >= 0 && vk < 512)
+            g_vk_mask[vk] |= mask;
+    }
+}
+
+static void load_input_map() {
+    for (int i = 0; i < 512; ++i) g_vk_mask[i] = 0;
+
+    std::string path = g_game_dir.empty() ? "input.ini" : g_game_dir + "/input.ini";
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (f) {
+        std::string contents;
+        char buf[256];
+        while (std::fgets(buf, sizeof(buf), f)) contents += buf;
+        std::fclose(f);
+        parse_input_ini(contents);
+    } else {
+        parse_input_ini(kDefaultInputIni);
+        FILE* w = std::fopen(path.c_str(), "w");
+        if (w) {
+            std::fwrite(kDefaultInputIni, 1, std::strlen(kDefaultInputIni), w);
+            std::fclose(w);
+        }
     }
 }
 
 static bool key_state(int vk) {
-    u32 held = hidKeysHeld();
-    switch (vk) {
-        case 37: case 38: case 39: case 40:
-        case 13: case 27: case 32: case 'Y': case 'Q': case 'E':
-            return gml_vk_from_hid(held, vk) != 0;
-        default: return false;
-    }
+    if (vk < 0 || vk >= 512) return false;
+    return (hidKeysHeld() & g_vk_mask[vk]) != 0;
 }
 
 static void console_frame_update() {
@@ -849,6 +956,9 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     gfxSetDoubleBuffering(GFX_TOP, false);
     consoleInit(GFX_BOTTOM, &g_bottom_console);
     klog("gfxInitDefault done");
+
+    load_input_map();
+    klog("input.ini loaded");
 
     if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
         klog("C3D_Init FAILED");
