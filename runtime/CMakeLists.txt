@@ -1,11 +1,32 @@
 set(KWIK_THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/../third_party)
 
 if(NINTENDO_3DS)
-    find_library(SDL2_3DS_LIB SDL2 PATHS $ENV{DEVKITPRO}/portlibs/3ds/lib)
-    find_path(SDL2_3DS_INCLUDE SDL2/SDL.h PATHS $ENV{DEVKITPRO}/portlibs/3ds/include)
-    if(NOT SDL2_3DS_LIB OR NOT SDL2_3DS_INCLUDE)
-        message(FATAL_ERROR "kwik: could not find the 3ds-sdl2 portlib - install it with dkp-pacman -S 3ds-sdl2")
+    find_program(KWIK_PICASSO picasso PATHS $ENV{DEVKITPRO}/tools/bin)
+    find_program(KWIK_BIN2S bin2s PATHS $ENV{DEVKITPRO}/tools/bin)
+    if(NOT KWIK_PICASSO OR NOT KWIK_BIN2S)
+        message(FATAL_ERROR "kwik: could not find picasso/bin2s - is DEVKITPRO set correctly?")
     endif()
+
+    set(KWIK_VSHADER_PICA ${CMAKE_CURRENT_SOURCE_DIR}/source/backends/3ds/vshader.v.pica)
+    set(KWIK_VSHADER_SHBIN ${CMAKE_CURRENT_BINARY_DIR}/vshader.shbin)
+    set(KWIK_VSHADER_ASM ${CMAKE_CURRENT_BINARY_DIR}/vshader_shbin.s)
+
+    add_custom_command(
+        OUTPUT ${KWIK_VSHADER_SHBIN}
+        COMMAND ${KWIK_PICASSO} -o ${KWIK_VSHADER_SHBIN} ${KWIK_VSHADER_PICA}
+        DEPENDS ${KWIK_VSHADER_PICA}
+        COMMENT "kwik: compiling vshader.v.pica"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT ${KWIK_VSHADER_ASM}
+        COMMAND sh -c "${KWIK_BIN2S} ${KWIK_VSHADER_SHBIN} > ${KWIK_VSHADER_ASM}"
+        DEPENDS ${KWIK_VSHADER_SHBIN}
+        COMMENT "kwik: embedding vshader.shbin"
+        VERBATIM
+    )
+
+    enable_language(ASM)
 
     add_library(kwik_runtime STATIC
         ${CMAKE_CURRENT_SOURCE_DIR}/source/value.cpp
@@ -16,17 +37,18 @@ if(NINTENDO_3DS)
         ${CMAKE_CURRENT_SOURCE_DIR}/source/builtins_misc.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/source/builtins_ch2.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/source/builtins_ch5.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/source/backends/sdl2.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/backends/3ds.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/source/assets_rt.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/source/audio_stub_3ds.cpp
         ${KWIK_THIRD_PARTY}/stb/stb_vorbis.c
+        ${KWIK_VSHADER_ASM}
     )
 
     set_target_properties(kwik_runtime PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(kwik_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(kwik_runtime PRIVATE ${KWIK_THIRD_PARTY}/stb ${SDL2_3DS_INCLUDE})
+    target_include_directories(kwik_runtime PRIVATE ${KWIK_THIRD_PARTY}/stb)
 
-    target_link_libraries(kwik_runtime PUBLIC ${SDL2_3DS_LIB} citro3d ctru m)
+    target_link_libraries(kwik_runtime PUBLIC citro3d ctru m)
     target_compile_definitions(kwik_runtime PUBLIC __3DS__)
     target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft -O2 -ffast-math)
     if(NOT CMAKE_BUILD_TYPE)

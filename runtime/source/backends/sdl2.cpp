@@ -8,10 +8,6 @@
 #include <cstdlib>
 #include <vector>
 
-#ifdef __3DS__
-#include <3ds.h>
-#endif
-
 namespace gml {
 
 static SDL_Window* g_window = nullptr;
@@ -139,34 +135,6 @@ static double time_seconds() {
     return (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
 }
 
-#ifdef __3DS__
-static SDL_GameController* g_pad = nullptr;
-static bool g_touch_down = false;
-static float g_touch_x = 0, g_touch_y = 0;
-static PrintConsole g_bottom_console;
-static double g_fps_disp = 0.0;
-static double g_fps_accum = 0.0;
-static int g_fps_frames = 0;
-
-static void console_frame_update() {
-    g_fps_frames++;
-    g_fps_accum += g_dt;
-    if (g_fps_accum >= 0.5) {
-        g_fps_disp = g_fps_frames / g_fps_accum;
-        g_fps_frames = 0;
-        g_fps_accum = 0.0;
-    }
-    consoleSelect(&g_bottom_console);
-    printf("\x1b[0;0Hkwik debug console      ");
-    printf("\x1b[1;0Hfps: %5.1f  frame: %5.2fms   ", g_fps_disp, g_dt * 1000.0);
-    printf("\x1b[2;0Hroom: %dx%d  view: %dx%d   ", g_room_w, g_room_h, (int)g_view_w,
-           (int)g_view_h);
-    printf("\x1b[3;0Htextures: %3d  surfaces: %3d   ", (int)g_textures.size(),
-           (int)g_surfaces.size());
-    printf("\x1b[4;0H------------------------------------\n");
-}
-#endif
-
 static void pump_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -179,15 +147,6 @@ static void pump_events() {
                 g_wheel_accum += ev.wheel.y;
 #endif
                 break;
-#ifdef __3DS__
-            case SDL_FINGERDOWN:
-            case SDL_FINGERMOTION:
-                g_touch_down = true;
-                g_touch_x = ev.tfinger.x * 320.0f;
-                g_touch_y = ev.tfinger.y * 240.0f;
-                break;
-            case SDL_FINGERUP: g_touch_down = false; break;
-#endif
             default: break;
         }
     }
@@ -626,24 +585,6 @@ void render_primitive_end() {
 }
 
 static bool key_state(int vk) {
-#ifdef __3DS__
-    if (g_pad) {
-        switch (vk) {
-            case 37: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT)) return true; break;
-            case 38: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_DPAD_UP)) return true; break;
-            case 39: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) return true; break;
-            case 40: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN)) return true; break;
-            case 13: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_A) ||
-                         SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_START)) return true; break;
-            case 27: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_B)) return true; break;
-            case 32: if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_X)) return true; break;
-            case 'Y': if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_Y)) return true; break;
-            case 'Q': if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) return true; break;
-            case 'E': if (SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) return true; break;
-            default: break;
-        }
-    }
-#endif
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
     if (!ks) return false;
     switch (vk) {
@@ -678,50 +619,27 @@ static bool key_state(int vk) {
 
 bool render_init(const char* title, int width, int height, unsigned int bg_color) {
     Uint32 flags = SDL_INIT_VIDEO;
-#ifdef __3DS__
-    flags |= SDL_INIT_GAMECONTROLLER;
-#endif
     if (SDL_Init(flags) != 0) {
         std::fprintf(stderr, "kwik: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
-#ifdef __3DS__
-    if (SDL_NumJoysticks() > 0) g_pad = SDL_GameControllerOpen(0);
-    consoleInit(GFX_BOTTOM, &g_bottom_console);
-    *stderr = *stdout;
-    setvbuf(stdout, nullptr, _IONBF, 0);
-#endif
 
     int phys_w = width;
     int phys_h = height;
-#ifdef __3DS__
-    phys_w = 400;
-    phys_h = 240;
-#endif
 
     g_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, phys_w,
-                                phys_h,
-#ifdef __3DS__
-                                0
-#else
-                                SDL_WINDOW_RESIZABLE
-#endif
-    );
+                                phys_h, SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         std::fprintf(stderr, "kwik: window creation failed: %s\n", SDL_GetError());
         SDL_Quit();
         return false;
     }
 
-#ifdef __3DS__
-    g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_TARGETTEXTURE);
-#else
     g_renderer = SDL_CreateRenderer(g_window, -1,
                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC |
                                         SDL_RENDERER_TARGETTEXTURE);
     if (!g_renderer)
         g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_TARGETTEXTURE);
-#endif
     if (!g_renderer) {
         std::fprintf(stderr, "kwik: renderer creation failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(g_window);
@@ -828,9 +746,6 @@ void render_end_frame() {
     g_dt = g_last_time > 0.0 ? now - g_last_time : 0.0;
     if (g_dt > 0.25) g_dt = 0.25;
     g_last_time = now;
-#ifdef __3DS__
-    console_frame_update();
-#endif
     for (int i = 0; i < 512; ++i) g_keys_prev[i] = g_keys_now[i];
     for (int i = 0; i < 3; ++i) g_mouse_prev[i] = g_mouse_now[i];
     pump_events();
@@ -839,16 +754,10 @@ void render_end_frame() {
     for (int i = 2; i < 512; ++i) any = any || g_keys_now[i];
     g_keys_now[1] = any;
     g_keys_now[0] = false;
-#ifdef __3DS__
-    g_mouse_now[0] = g_touch_down;
-    g_mouse_now[1] = false;
-    g_mouse_now[2] = false;
-#else
     Uint32 mb = SDL_GetMouseState(nullptr, nullptr);
     g_mouse_now[0] = (mb & SDL_BUTTON_LMASK) != 0;
     g_mouse_now[1] = (mb & SDL_BUTTON_RMASK) != 0;
     g_mouse_now[2] = (mb & SDL_BUTTON_MMASK) != 0;
-#endif
     g_wheel_frame = g_wheel_accum;
     g_wheel_accum = 0.0;
 }
@@ -892,12 +801,7 @@ static void mouse_to_gui(double& gx, double& gy) {
     gy = 0;
     if (!g_window) return;
     int mx, my;
-#ifdef __3DS__
-    mx = (int)g_touch_x;
-    my = (int)g_touch_y;
-#else
     SDL_GetMouseState(&mx, &my);
-#endif
     int ww, wh;
     SDL_GetWindowSize(g_window, &ww, &wh);
     if (ww <= 0 || wh <= 0) return;
@@ -985,22 +889,12 @@ int render_gui_width() { return g_gui_w; }
 int render_gui_height() { return g_gui_h; }
 
 void render_set_window_size(int width, int height) {
-#ifdef __3DS__
-    (void)width;
-    (void)height;
-    return;
-#else
     g_win_w = width;
     g_win_h = height;
     if (g_window && !g_fullscreen) SDL_SetWindowSize(g_window, width, height);
-#endif
 }
 
 void render_set_fullscreen(bool fs) {
-#ifdef __3DS__
-    (void)fs;
-    return;
-#endif
     if (!g_window || fs == g_fullscreen) return;
     if (fs) {
         SDL_GetWindowPosition(g_window, &g_saved_x, &g_saved_y);
@@ -1032,22 +926,14 @@ int render_window_height() {
     return wh;
 }
 int render_display_width() {
-#ifdef __3DS__
-    return 400;
-#else
     SDL_DisplayMode mode;
     if (SDL_GetDesktopDisplayMode(0, &mode) == 0) return mode.w;
     return 1920;
-#endif
 }
 int render_display_height() {
-#ifdef __3DS__
-    return 240;
-#else
     SDL_DisplayMode mode;
     if (SDL_GetDesktopDisplayMode(0, &mode) == 0) return mode.h;
     return 1080;
-#endif
 }
 
 void render_set_room(int width, int height, unsigned int) {
@@ -1059,12 +945,6 @@ void render_shutdown() {
     for (auto& t : g_textures)
         if (t.alive && t.tex) SDL_DestroyTexture(t.tex);
     g_textures.clear();
-#ifdef __3DS__
-    if (g_pad) {
-        SDL_GameControllerClose(g_pad);
-        g_pad = nullptr;
-    }
-#endif
     if (g_renderer) {
         SDL_DestroyRenderer(g_renderer);
         g_renderer = nullptr;

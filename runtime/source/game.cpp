@@ -3120,13 +3120,8 @@ int run_game(const GameTables& tables) {
     g_assets_path = tables.assets_path ? tables.assets_path : "Assets.dat";
 #ifdef __3DS__
     g_game_dir.clear();
-    std::string exe_dir = "sdmc:/3ds";
-    if (const char* argv0 = kwik_program_argv0()) {
-        std::string p = argv0;
-        size_t slash = p.find_last_of('/');
-        if (slash != std::string::npos) exe_dir = p.substr(0, slash);
-    }
-    g_assets_path = exe_dir + "/Assets.dat";
+    std::string title = tables.game_name && *tables.game_name ? tables.game_name : "kwik_game";
+    g_assets_path = "sdmc:/3ds/" + title + "/Assets.dat";
 #endif
     if (tables.room_count <= 0) return 1;
 
