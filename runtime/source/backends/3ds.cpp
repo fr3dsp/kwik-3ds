@@ -363,7 +363,7 @@ bool render_surface_set_target(int id) {
     g_target_stack.push_back(id);
     g_xf_stack.push_back(g_xf);
     C3D_FrameDrawOn(t->rt);
-    C3D_SetViewport(0, 0, t->pw, t->ph);
+    C3D_SetViewport(0, 0, t->w, t->h);
     set_surface_ortho(t->w, t->h);
     return true;
 }
@@ -380,7 +380,7 @@ void render_surface_reset_target() {
     RtTexture* t = tex_of(tid);
     if (t && t->rt) {
         C3D_FrameDrawOn(t->rt);
-        C3D_SetViewport(0, 0, t->pw, t->ph);
+        C3D_SetViewport(0, 0, t->w, t->h);
     }
 }
 
@@ -915,7 +915,7 @@ void render_begin_frame() {
     RtTexture* t = tex_of(g_app_tex);
     if (t && t->rt) {
         C3D_FrameDrawOn(t->rt);
-        C3D_SetViewport(0, 0, t->pw, t->ph);
+        C3D_SetViewport(0, 0, t->w, t->h);
         C3D_RenderTargetClear(t->rt, C3D_CLEAR_COLOR, pack_clear_color(t->fmt, 0, 0, 0, 255), 0);
         set_surface_ortho(t->w, t->h);
     }
