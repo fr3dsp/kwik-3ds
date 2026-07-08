@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,42 @@ static unsigned int tex_alloc_slot() {
     return (unsigned int)g_textures.size();
 }
 
+struct EvictEntry {
+    unsigned int tex_id;
+    TextureEvictFn cb;
+    void* user;
+    long last_used;
+};
+static std::vector<EvictEntry> g_evictable;
+static long g_evict_clock = 0;
+
+void render_register_evictable(unsigned int tex_id, TextureEvictFn on_evict, void* user_data) {
+    g_evictable.push_back({tex_id, on_evict, user_data, ++g_evict_clock});
+}
+
+void render_touch_texture(unsigned int tex_id) {
+    ++g_evict_clock;
+    for (auto& e : g_evictable)
+        if (e.tex_id == tex_id) { e.last_used = g_evict_clock; return; }
+}
+
+static bool evict_oldest_texture() {
+    if (g_evictable.empty()) return false;
+    size_t oldest = 0;
+    for (size_t i = 1; i < g_evictable.size(); ++i)
+        if (g_evictable[i].last_used < g_evictable[oldest].last_used) oldest = i;
+    EvictEntry e = g_evictable[oldest];
+    g_evictable.erase(g_evictable.begin() + oldest);
+    RtTexture* t = tex_of(e.tex_id);
+    if (t) {
+        if (t->rt) { C3D_RenderTargetDelete(t->rt); t->rt = nullptr; }
+        C3D_TexDelete(&t->tex);
+        t->alive = false;
+    }
+    if (e.cb) e.cb(e.user);
+    return true;
+}
+
 struct RtSurface {
     unsigned int tex_id = 0;
     int w = 0, h = 0;
@@ -145,6 +182,8 @@ static int next_pot(int v) {
     while (p < v) p <<= 1;
     return p;
 }
+
+static const int kMaxTexDim = 1024;
 
 static double time_seconds() { return osGetTime() / 1000.0; }
 
@@ -269,21 +308,40 @@ int render_app_height() { return g_fbo_h > 0 ? g_fbo_h : g_gui_h; }
 static unsigned int create_texture(int w, int h, bool as_target) {
     unsigned int id = tex_alloc_slot();
     RtTexture& t = *g_textures[id - 1];
+    t.alive = false;
+    t.rt = nullptr;
     t.w = w;
     t.h = h;
     t.pw = next_pot(w);
     t.ph = next_pot(h);
+    if (t.pw > kMaxTexDim || t.ph > kMaxTexDim) {
+        klog("create_texture: clamping oversized request w=%d h=%d pw=%d ph=%d to PICA200 max %d",
+             w, h, t.pw, t.ph, kMaxTexDim);
+        if (t.pw > kMaxTexDim) t.pw = kMaxTexDim;
+        if (t.ph > kMaxTexDim) t.ph = kMaxTexDim;
+        if (t.w > t.pw) t.w = t.pw;
+        if (t.h > t.ph) t.h = t.ph;
+    }
     GPU_TEXCOLOR fmt = GPU_RGBA8;
-    bool ok = C3D_TexInitWithParams(&t.tex, nullptr,
+    bool ok = false;
+    int evict_budget = (int)g_evictable.size() + 1;
+    for (;;) {
+        t.tex = C3D_Tex{};
+        fmt = GPU_RGBA8;
+        ok = C3D_TexInitWithParams(&t.tex, nullptr,
                                     (C3D_TexInitParams){(u16)t.pw, (u16)t.ph, 0, fmt, GPU_TEX_2D,
                                                         as_target});
-    if (!ok && as_target) {
-        klog("C3D_TexInitWithParams FAILED at RGBA8 w=%d h=%d pw=%d ph=%d, retrying RGBA5551", w,
-             h, t.pw, t.ph);
-        fmt = GPU_RGBA5551;
-        ok = C3D_TexInitWithParams(&t.tex, nullptr,
-                                   (C3D_TexInitParams){(u16)t.pw, (u16)t.ph, 0, fmt, GPU_TEX_2D,
-                                                       as_target});
+        if (!ok && as_target) {
+            klog("C3D_TexInitWithParams FAILED at RGBA8 w=%d h=%d pw=%d ph=%d, retrying RGBA5551",
+                 w, h, t.pw, t.ph);
+            t.tex = C3D_Tex{};
+            fmt = GPU_RGBA5551;
+            ok = C3D_TexInitWithParams(&t.tex, nullptr,
+                                       (C3D_TexInitParams){(u16)t.pw, (u16)t.ph, 0, fmt, GPU_TEX_2D,
+                                                           as_target});
+        }
+        if (ok || evict_budget-- <= 0 || !evict_oldest_texture()) break;
+        klog("create_texture: evicted a texture to free memory, retrying w=%d h=%d", w, h);
     }
     if (!ok) {
         klog("C3D_TexInitWithParams FAILED w=%d h=%d pw=%d ph=%d target=%d", w, h, t.pw, t.ph,
@@ -484,7 +542,28 @@ static void swizzle_upload_abgr8(const unsigned char* src, int src_w, int src_h,
 }
 
 unsigned int render_upload_texture(const unsigned char* rgba, int w, int h) {
-    unsigned int id = create_texture(w, h, false);
+    std::vector<unsigned char> scaled;
+    const unsigned char* src = rgba;
+    int sw = w, sh = h;
+    if (w > kMaxTexDim || h > kMaxTexDim) {
+        sw = w > kMaxTexDim ? kMaxTexDim : w;
+        sh = h > kMaxTexDim ? kMaxTexDim : h;
+        klog("render_upload_texture: downscaling %dx%d -> %dx%d (3DS texture size limit)", w, h,
+             sw, sh);
+        scaled.resize((size_t)sw * sh * 4);
+        for (int y = 0; y < sh; ++y) {
+            int sy = (int)((int64_t)y * h / sh);
+            if (sy >= h) sy = h - 1;
+            for (int x = 0; x < sw; ++x) {
+                int sx = (int)((int64_t)x * w / sw);
+                if (sx >= w) sx = w - 1;
+                std::memcpy(&scaled[((size_t)y * sw + x) * 4], &rgba[((size_t)sy * w + sx) * 4],
+                            4);
+            }
+        }
+        src = scaled.data();
+    }
+    unsigned int id = create_texture(sw, sh, false);
     if (!id) return 0;
     RtTexture& t = *g_textures[id - 1];
     size_t padded_size = (size_t)t.pw * t.ph * 4;
@@ -494,7 +573,9 @@ unsigned int render_upload_texture(const unsigned char* rgba, int w, int h) {
         return id;
     }
     std::memset(padded, 0, padded_size);
-    swizzle_upload_abgr8(rgba, w, h, (u32*)padded, t.pw);
+    int upload_w = sw < t.pw ? sw : t.pw;
+    int upload_h = sh < t.ph ? sh : t.ph;
+    swizzle_upload_abgr8(src, upload_w, upload_h, (u32*)padded, t.pw);
     C3D_TexUpload(&t.tex, padded);
     C3D_TexFlush(&t.tex);
     linearFree(padded);
@@ -546,6 +627,7 @@ void render_draw_quad(unsigned int tex, double x, double y, double dw, double dh
                       float v0, float u1, float v1, unsigned int blend_bgr, double alpha) {
     RtTexture* t = tex_of(tex);
     if (!t) return;
+    render_touch_texture(tex);
     double rad = angle_deg * 3.14159265358979323846 / 180.0;
     double c = std::cos(rad), s = std::sin(rad);
     double lx[4] = {0.0, dw, dw, 0.0};
@@ -574,6 +656,7 @@ void render_draw_glyph_colored(unsigned int tex, double dx, double dy, double dw
              t ? t->ph : -1, u0, v0, u1, v1, dw, dh, bgr);
     }
     if (!t) return;
+    render_touch_texture(tex);
     float vx[4] = {tx(dx), tx(dx + dw), tx(dx + dw), tx(dx)};
     float vy[4] = {ty(dy), ty(dy), ty(dy + dh), ty(dy + dh)};
     draw_tex_quad(t, vx, vy, u0, v0, u1, v1, bgr, alpha);
@@ -942,8 +1025,13 @@ static void console_frame_update() {
     printf("\x1b[1;0Hfps: %5.1f  frame: %5.2fms   ", g_fps_disp, g_dt * 1000.0);
     printf("\x1b[2;0Hroom: %dx%d  view: %dx%d   ", g_room_w, g_room_h, (int)g_view_w,
            (int)g_view_h);
-    printf("\x1b[3;0Htextures: %3d  surfaces: %3d   ", (int)g_textures.size(),
-           (int)g_surfaces.size());
+    int tex_alive = 0;
+    for (auto& tp : g_textures)
+        if (tp->alive) ++tex_alive;
+    int surf_alive = 0;
+    for (auto& sf : g_surfaces)
+        if (sf.alive) ++surf_alive;
+    printf("\x1b[3;0Htextures: %3d  surfaces: %3d   ", tex_alive, surf_alive);
     printf("\x1b[4;0H------------------------------------\n");
 }
 
@@ -960,13 +1048,13 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     load_input_map();
     klog("input.ini loaded");
 
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4)) {
+    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
         klog("C3D_Init FAILED");
         return false;
     }
     klog("C3D_Init ok");
 
-    g_frame_arena_size = 16 * 1024 * 1024;
+    g_frame_arena_size = 4 * 1024 * 1024;
     g_frame_arena = (u8*)linearAlloc(g_frame_arena_size);
     g_frame_arena_offset = 0;
     klog("frame arena: %p size=%zu", (void*)g_frame_arena, g_frame_arena_size);

@@ -131,27 +131,41 @@ int kwik_register_dynamic_image(unsigned int tex, int w, int h) {
     return (int)g_images.size() - 1;
 }
 
+static void invalidate_loaded_image(void* user_data) {
+    int index = (int)(intptr_t)user_data;
+    if (index < 0 || index >= (int)g_images.size()) return;
+    g_images[index].tried = false;
+    g_images[index].ok = false;
+    g_images[index].tex = 0;
+}
+
 static LoadedImage& load_image(int index) {
     ensure_assets();
     static LoadedImage dummy;
     if (index < 0 || index >= (int)g_images.size()) return dummy;
     LoadedImage& img = g_images[index];
-    if (img.tried) return img;
-    img.tried = true;
+    if (img.tried) {
+        if (img.ok) render_touch_texture(img.tex);
+        return img;
+    }
 
     size_t off = rd32((size_t)g_image_count * 2 + (size_t)index * 4);
-    if (off == 0 || off + 16 > g_assets.size()) return img;
+    if (off == 0 || off + 16 > g_assets.size()) { img.tried = true; return img; }
     uint32_t png_size = rd32(off + 12);
-    if (off + 16 + png_size > g_assets.size()) return img;
+    if (off + 16 + png_size > g_assets.size()) { img.tried = true; return img; }
 
     int w, h, ch;
     unsigned char* pixels = stbi_load_from_memory(&g_assets[off + 16], png_size, &w, &h, &ch, 4);
-    if (!pixels) return img;
-    img.tex = render_upload_texture(pixels, w, h);
+    if (!pixels) { img.tried = true; return img; }
+    unsigned int tex = render_upload_texture(pixels, w, h);
+    stbi_image_free(pixels);
+    if (tex == 0) return img;
+    img.tex = tex;
     img.w = w;
     img.h = h;
     img.ok = true;
-    stbi_image_free(pixels);
+    img.tried = true;
+    render_register_evictable(tex, invalidate_loaded_image, (void*)(intptr_t)index);
     return img;
 }
 

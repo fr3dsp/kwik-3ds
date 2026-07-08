@@ -308,6 +308,9 @@ unsigned int render_upload_texture(const unsigned char* rgba, int w, int h) {
     return tex_register(tex, w, h, false);
 }
 
+void render_register_evictable(unsigned int, TextureEvictFn, void*) {}
+void render_touch_texture(unsigned int) {}
+
 static SDL_Color vcol(unsigned int bgr, double alpha) {
     SDL_Color c;
     if (g_fog_on) {
