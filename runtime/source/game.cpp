@@ -2806,8 +2806,32 @@ static void draw_world() {
         if (inst->dead) continue;
         int owner = -1;
         ScriptFn fn = find_event(inst->object_index, EVK_DRAW, 0, &owner);
-        if (fn) call_event(inst, EVK_DRAW, 0, fn, owner);
-        else draw_self_instance(inst);
+        if (fn) {
+            call_event(inst, EVK_DRAW, 0, fn, owner);
+        } else {
+            KBox box = make_box(inst, inst->x, inst->y);
+            bool visible = true;
+            if (box.valid && cam.w > 0 && cam.h > 0) {
+                double bx0, bx1, by0, by1;
+                if (box.rot) {
+                    double cx[4], cy[4];
+                    box_corners(box, cx, cy);
+                    bx0 = *std::min_element(cx, cx + 4);
+                    bx1 = *std::max_element(cx, cx + 4);
+                    by0 = *std::min_element(cy, cy + 4);
+                    by1 = *std::max_element(cy, cy + 4);
+                } else {
+                    bx0 = box.x + box.lx0;
+                    bx1 = box.x + box.lx1;
+                    by0 = box.y + box.ly0;
+                    by1 = box.y + box.ly1;
+                }
+                const double margin = 32.0;
+                visible = bx1 >= cam.x - margin && bx0 <= cam.x + cam.w + margin &&
+                          by1 >= cam.y - margin && by0 <= cam.y + cam.h + margin;
+            }
+            if (visible) draw_self_instance(inst);
+        }
     }
 
     for (auto& sp : g_instances) {

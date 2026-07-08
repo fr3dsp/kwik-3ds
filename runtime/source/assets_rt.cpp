@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <deque>
 #include <algorithm>
 
 namespace gml {
@@ -71,7 +72,7 @@ const unsigned char* kwik_sound_blob(int blob_index, unsigned int& size, int& ty
 }
 
 static std::vector<KwikSprite> g_dyn_sprites;
-static std::vector<std::string> g_dyn_sprite_names;
+static std::deque<std::string> g_dyn_sprite_names;
 
 static std::unordered_map<int, KwikSprite> g_sprite_overrides;
 

@@ -1,4 +1,5 @@
 #include "gml_runtime.h"
+#include "render.h"
 
 #include <cmath>
 #include <cstdio>
@@ -166,15 +167,23 @@ Value kwik_array_elem(const Value& slot, int idx) {
     return slot.arr->items[idx];
 }
 
+static const int kMaxArrayIndex = 10 * 1000 * 1000;
+
 void kwik_array_store(Value& slot, int idx, const Value& v) {
-    if (idx < 0) return;
+    if (idx < 0 || idx > kMaxArrayIndex) {
+        render_debug_log("kwik_array_store: rejecting out-of-range index %d", idx);
+        return;
+    }
     ensure_array_slot(slot);
     if ((size_t)idx >= slot.arr->items.size()) slot.arr->items.resize(idx + 1);
     slot.arr->items[idx] = v;
 }
 
 Value kwik_array_wslot(Value& slot, int idx) {
-    if (idx < 0) return Value();
+    if (idx < 0 || idx > kMaxArrayIndex) {
+        render_debug_log("kwik_array_wslot: rejecting out-of-range index %d", idx);
+        return Value();
+    }
     ensure_array_slot(slot);
     if ((size_t)idx >= slot.arr->items.size()) slot.arr->items.resize(idx + 1);
     Value& cell = slot.arr->items[idx];

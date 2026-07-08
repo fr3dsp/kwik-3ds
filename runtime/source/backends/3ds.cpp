@@ -124,25 +124,36 @@ struct EvictEntry {
     TextureEvictFn cb;
     void* user;
     long last_used;
+    long touched_frame;
 };
 static std::vector<EvictEntry> g_evictable;
 static long g_evict_clock = 0;
+static long g_evict_frame_gen = 0;
+
+static void evict_bump_frame() { ++g_evict_frame_gen; }
 
 void render_register_evictable(unsigned int tex_id, TextureEvictFn on_evict, void* user_data) {
-    g_evictable.push_back({tex_id, on_evict, user_data, ++g_evict_clock});
+    g_evictable.push_back({tex_id, on_evict, user_data, ++g_evict_clock, g_evict_frame_gen});
 }
 
 void render_touch_texture(unsigned int tex_id) {
     ++g_evict_clock;
     for (auto& e : g_evictable)
-        if (e.tex_id == tex_id) { e.last_used = g_evict_clock; return; }
+        if (e.tex_id == tex_id) {
+            e.last_used = g_evict_clock;
+            e.touched_frame = g_evict_frame_gen;
+            return;
+        }
 }
 
 static bool evict_oldest_texture() {
-    if (g_evictable.empty()) return false;
-    size_t oldest = 0;
-    for (size_t i = 1; i < g_evictable.size(); ++i)
-        if (g_evictable[i].last_used < g_evictable[oldest].last_used) oldest = i;
+    size_t oldest = (size_t)-1;
+    for (size_t i = 0; i < g_evictable.size(); ++i) {
+        if (g_evictable[i].touched_frame == g_evict_frame_gen) continue;
+        if (oldest == (size_t)-1 || g_evictable[i].last_used < g_evictable[oldest].last_used)
+            oldest = i;
+    }
+    if (oldest == (size_t)-1) return false;
     EvictEntry e = g_evictable[oldest];
     g_evictable.erase(g_evictable.begin() + oldest);
     RtTexture* t = tex_of(e.tex_id);
@@ -363,10 +374,11 @@ int render_surface_create(int w, int h) {
     if (w <= 0 || h <= 0) return -1;
     unsigned int tid = create_texture(w, h, true);
     if (!tid) return -1;
+    RtTexture* t = tex_of(tid);
     RtSurface sf;
     sf.tex_id = tid;
-    sf.w = w;
-    sf.h = h;
+    sf.w = t ? t->w : w;
+    sf.h = t ? t->h : h;
     sf.alive = true;
     for (size_t i = 0; i < g_surfaces.size(); ++i)
         if (!g_surfaces[i].alive) {
@@ -1142,6 +1154,7 @@ static void apply_view_xf() {
 }
 
 void render_begin_frame() {
+    evict_bump_frame();
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     g_frame_arena_offset = 0;
     g_target_stack.clear();
