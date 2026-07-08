@@ -1107,9 +1107,12 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     g_white_tex = render_upload_texture(white_px, 1, 1);
     klog("white tex id=%u", g_white_tex);
 
-    g_app_tex = create_texture(phys_w, phys_h, true);
-    g_fbo_w = phys_w;
-    g_fbo_h = phys_h;
+    double aspect_scale = std::min((double)phys_w / width, (double)phys_h / height);
+    int fbo_w = std::max(1, (int)std::lround(width * aspect_scale));
+    int fbo_h = std::max(1, (int)std::lround(height * aspect_scale));
+    g_app_tex = create_texture(fbo_w, fbo_h, true);
+    g_fbo_w = fbo_w;
+    g_fbo_h = fbo_h;
     klog("app tex id=%u", g_app_tex);
     if (g_app_tex) {
         RtTexture* at = tex_of(g_app_tex);
