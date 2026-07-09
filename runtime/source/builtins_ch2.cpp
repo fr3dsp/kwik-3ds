@@ -75,11 +75,11 @@ GMLFN(variable_instance_get) {
     if (argc < 2) return Value();
     Instance* t = kwik_resolve_target(self, args[0]);
     if (!t) return Value();
-    return kwik_inst_get(self, args[0], ((std::string)args[1]).c_str());
+    return kwik_inst_get(self, args[0], kwik_intern_varname(((std::string)args[1]).c_str()));
 }
 GMLFN(variable_instance_set) {
     if (argc < 3) return Value();
-    kwik_inst_set(self, args[0], ((std::string)args[1]).c_str(), args[2]);
+    kwik_inst_set(self, args[0], kwik_intern_varname(((std::string)args[1]).c_str()), args[2]);
     return Value();
 }
 GMLFN(variable_instance_get_names) {
@@ -87,7 +87,7 @@ GMLFN(variable_instance_get_names) {
     Instance* t = kwik_resolve_target(self, args[0]);
     Value out = kwik_new_array(nullptr, 0);
     if (t)
-        for (auto& kv : t->vars) out.arr->items.push_back(Value(kv.first));
+        for (auto& kv : t->vars) out.arr->items.push_back(Value(std::string(kwik_varname_of(kv.first))));
     return out;
 }
 

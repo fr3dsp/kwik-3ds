@@ -50,6 +50,9 @@ struct GmlArray {
     int64_t owner = 0;
 };
 
+int kwik_intern_varname(const char* name);
+const char* kwik_varname_of(int id);
+
 struct Instance : std::enable_shared_from_this<Instance> {
     double x = 0.0, y = 0.0;
     double xprevious = 0.0, yprevious = 0.0, xstart = 0.0, ystart = 0.0;
@@ -62,10 +65,12 @@ struct Instance : std::enable_shared_from_this<Instance> {
     bool visible = true;
     double depth = 0.0;
     double m_speed = 0.0, m_dir = 0.0, m_hs = 0.0, m_vs = 0.0;
-    std::unordered_map<std::string, Value> vars;
+    std::unordered_map<int, Value> vars;
 
-    Value& var(const std::string& n) { return vars[n]; }
-    bool has(const std::string& n) const { return vars.count(n) != 0; }
+    Value& var(int id) { return vars[id]; }
+    Value& var(const std::string& n) { return vars[kwik_intern_varname(n.c_str())]; }
+    bool has(int id) const { return vars.count(id) != 0; }
+    bool has(const std::string& n) const { return vars.count(kwik_intern_varname(n.c_str())) != 0; }
 };
 
 struct CollisionHandler {
@@ -245,6 +250,8 @@ extern const KwikGlyph* g_glyphs;
 extern int g_glyph_count;
 extern const KwikSound* g_sound_table;
 extern int g_sound_count;
+extern const char* const* g_static_varnames;
+extern int g_static_varname_count;
 extern const KwikTileset* g_tilesets;
 extern int g_tileset_count;
 
@@ -271,16 +278,16 @@ Value gml_gt(const Value& a, const Value& b);
 bool gml_truthy(const Value& a);
 
 Value& global_var(const std::string& name);
-Value kwik_scope_get(Instance* self, int spec, const char* name);
-void kwik_scope_set(Instance* self, int spec, const char* name, const Value& v);
-Value kwik_inst_get(Instance* self, const Value& who, const char* name);
-void kwik_inst_set(Instance* self, const Value& who, const char* name, const Value& v);
-Value kwik_array_get(Instance* self, int spec, const char* name, const Value& idx);
-Value kwik_array_get_at(Instance* self, const Value& who, const char* name, const Value& idx);
-void kwik_array_set(Instance* self, int spec, const char* name, const Value& idx, const Value& v);
-void kwik_array_set_at(Instance* self, const Value& who, const char* name, const Value& idx, const Value& v);
-Value kwik_array_wref(Instance* self, int spec, const char* name, const Value& idx);
-Value kwik_array_wref_at(Instance* self, const Value& who, const char* name, const Value& idx);
+Value kwik_scope_get(Instance* self, int spec, int var_id);
+void kwik_scope_set(Instance* self, int spec, int var_id, const Value& v);
+Value kwik_inst_get(Instance* self, const Value& who, int var_id);
+void kwik_inst_set(Instance* self, const Value& who, int var_id, const Value& v);
+Value kwik_array_get(Instance* self, int spec, int var_id, const Value& idx);
+Value kwik_array_get_at(Instance* self, const Value& who, int var_id, const Value& idx);
+void kwik_array_set(Instance* self, int spec, int var_id, const Value& idx, const Value& v);
+void kwik_array_set_at(Instance* self, const Value& who, int var_id, const Value& idx, const Value& v);
+Value kwik_array_wref(Instance* self, int spec, int var_id, const Value& idx);
+Value kwik_array_wref_at(Instance* self, const Value& who, int var_id, const Value& idx);
 Value kwik_array_elem(const Value& slot, int idx);
 void kwik_array_store(Value& slot, int idx, const Value& v);
 Value kwik_array_wslot(Value& slot, int idx);

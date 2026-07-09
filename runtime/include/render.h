@@ -55,6 +55,7 @@ void render_set_fog(bool on, unsigned int bgr);
 void render_set_colorwrite(bool r, bool g, bool b, bool a);
 
 unsigned int render_upload_texture(const unsigned char* rgba, int w, int h);
+unsigned int render_upload_texture_t3x(const unsigned char* data, unsigned int size);
 
 using TextureEvictFn = void (*)(void* user_data);
 void render_register_evictable(unsigned int tex_id, TextureEvictFn on_evict, void* user_data);

@@ -3,6 +3,7 @@
 
 #include <3ds.h>
 #include <citro3d.h>
+#include <tex3ds.h>
 
 #include <algorithm>
 #include <cmath>
@@ -591,6 +592,36 @@ unsigned int render_upload_texture(const unsigned char* rgba, int w, int h) {
     C3D_TexUpload(&t.tex, padded);
     C3D_TexFlush(&t.tex);
     linearFree(padded);
+    return id;
+}
+
+unsigned int render_upload_texture_t3x(const unsigned char* data, unsigned int size) {
+    unsigned int id = tex_alloc_slot();
+    RtTexture& t = *g_textures[id - 1];
+    t.alive = false;
+    t.rt = nullptr;
+    Tex3DS_Texture t3x = nullptr;
+    int evict_budget = (int)g_evictable.size() + 1;
+    for (;;) {
+        t.tex = C3D_Tex{};
+        t3x = Tex3DS_TextureImport(data, size, &t.tex, nullptr, false);
+        if (t3x || evict_budget-- <= 0 || !evict_oldest_texture()) break;
+        klog("render_upload_texture_t3x: evicted a texture to free memory, retrying size=%u", size);
+    }
+    if (!t3x) {
+        klog("Tex3DS_TextureImport FAILED size=%u", size);
+        return 0;
+    }
+    const Tex3DS_SubTexture* sub = Tex3DS_GetSubTexture(t3x, 0);
+    t.pw = (int)t.tex.width;
+    t.ph = (int)t.tex.height;
+    t.w = sub ? sub->width : t.pw;
+    t.h = sub ? sub->height : t.ph;
+    t.fmt = t.tex.fmt;
+    Tex3DS_TextureFree(t3x);
+    C3D_TexSetWrap(&t.tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+    C3D_TexSetFilter(&t.tex, GPU_NEAREST, GPU_NEAREST);
+    t.alive = true;
     return id;
 }
 

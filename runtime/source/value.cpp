@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <unordered_map>
+#include <vector>
+#include <string>
 
 namespace gml {
 
@@ -138,6 +141,37 @@ bool gml_truthy(const Value& a) {
 Value& global_var(const std::string& name) {
     static std::unordered_map<std::string, Value> globals;
     return globals[name];
+}
+
+struct VarnameTable {
+    std::vector<std::string> names;
+    std::unordered_map<std::string, int> ids;
+
+    VarnameTable() {
+        for (int i = 0; i < g_static_varname_count; ++i) intern(g_static_varnames[i]);
+    }
+
+    int intern(const char* name) {
+        auto it = ids.find(name);
+        if (it != ids.end()) return it->second;
+        int id = (int)names.size();
+        names.emplace_back(name);
+        ids.emplace(names.back(), id);
+        return id;
+    }
+};
+
+static VarnameTable& varname_table() {
+    static VarnameTable table;
+    return table;
+}
+
+int kwik_intern_varname(const char* name) { return varname_table().intern(name); }
+
+const char* kwik_varname_of(int id) {
+    VarnameTable& t = varname_table();
+    if (id < 0 || (size_t)id >= t.names.size()) return "";
+    return t.names[(size_t)id].c_str();
 }
 
 static int64_t g_array_owner = 0;

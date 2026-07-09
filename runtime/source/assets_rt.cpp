@@ -36,6 +36,11 @@ static uint32_t rd32(size_t o) {
            ((uint32_t)g_assets[o + 3] << 24);
 }
 
+static uint16_t rd16(size_t o) {
+    if (o + 2 > g_assets.size()) return 0;
+    return (uint16_t)(g_assets[o] | (g_assets[o + 1] << 8));
+}
+
 static void ensure_assets() {
     if (g_assets_tried) return;
     g_assets_tried = true;
@@ -152,15 +157,26 @@ static LoadedImage& load_image(int index) {
 
     size_t off = rd32((size_t)g_image_count * 2 + (size_t)index * 4);
     if (off == 0 || off + 16 > g_assets.size()) { img.tried = true; return img; }
-    uint32_t png_size = rd32(off + 12);
-    if (off + 16 + png_size > g_assets.size()) { img.tried = true; return img; }
+    uint16_t format = rd16(off + 8);
+    uint32_t payload_size = rd32(off + 12);
+    if (off + 16 + payload_size > g_assets.size()) { img.tried = true; return img; }
 
-    int w, h, ch;
-    unsigned char* pixels = stbi_load_from_memory(&g_assets[off + 16], png_size, &w, &h, &ch, 4);
-    if (!pixels) { img.tried = true; return img; }
-    unsigned int tex = render_upload_texture(pixels, w, h);
-    stbi_image_free(pixels);
-    if (tex == 0) return img;
+    unsigned int tex = 0;
+    int w = 0, h = 0;
+    if (format == 1) {
+        tex = render_upload_texture_t3x(&g_assets[off + 16], payload_size);
+        if (tex == 0) return img;
+        w = rd16(off);
+        h = rd16(off + 2);
+    } else {
+        int ch;
+        unsigned char* pixels =
+            stbi_load_from_memory(&g_assets[off + 16], payload_size, &w, &h, &ch, 4);
+        if (!pixels) { img.tried = true; return img; }
+        tex = render_upload_texture(pixels, w, h);
+        stbi_image_free(pixels);
+        if (tex == 0) return img;
+    }
     img.tex = tex;
     img.w = w;
     img.h = h;
@@ -396,15 +412,22 @@ void kwik_draw_sprite_tiled(int spr, int sub, double x, double y, double xs, dou
 
 void draw_self_instance(Instance* inst) {
     if (!inst) return;
-    auto gv = [&](const char* n, double d) {
-        auto it = inst->vars.find(n);
+    static const int ID_sprite_index = kwik_intern_varname("sprite_index");
+    static const int ID_image_index = kwik_intern_varname("image_index");
+    static const int ID_image_xscale = kwik_intern_varname("image_xscale");
+    static const int ID_image_yscale = kwik_intern_varname("image_yscale");
+    static const int ID_image_angle = kwik_intern_varname("image_angle");
+    static const int ID_image_blend = kwik_intern_varname("image_blend");
+    static const int ID_image_alpha = kwik_intern_varname("image_alpha");
+    auto gv = [&](int id, double d) {
+        auto it = inst->vars.find(id);
         return it == inst->vars.end() ? d : (double)it->second;
     };
-    int spr = (int)gv("sprite_index", -1);
+    int spr = (int)gv(ID_sprite_index, -1);
     if (spr < 0) return;
-    kwik_draw_sprite_general(spr, (int)gv("image_index", 0), inst->x, inst->y,
-                             gv("image_xscale", 1), gv("image_yscale", 1), gv("image_angle", 0),
-                             (unsigned int)gv("image_blend", 16777215), gv("image_alpha", 1));
+    kwik_draw_sprite_general(spr, (int)gv(ID_image_index, 0), inst->x, inst->y,
+                             gv(ID_image_xscale, 1), gv(ID_image_yscale, 1), gv(ID_image_angle, 0),
+                             (unsigned int)gv(ID_image_blend, 16777215), gv(ID_image_alpha, 1));
 }
 
 struct RtGlyph {

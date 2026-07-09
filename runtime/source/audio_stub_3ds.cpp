@@ -569,6 +569,13 @@ GMLFN(audio_set_master_gain) {
     return Value();
 }
 
+GMLFN(audio_master_gain) { return audio_set_master_gain(self, args, argc); }
+
+GMLFN(audio_get_master_gain) {
+    (void)self; (void)args; (void)argc;
+    return Value((double)g_master_gain);
+}
+
 GMLFN(audio_create_stream) {
     (void)self;
     if (argc < 1) return Value(-1.0);

@@ -43,6 +43,18 @@ static std::string quote(const std::string& s) {
     return out;
 }
 
+static std::vector<std::string> g_varid_names;
+static std::unordered_map<std::string, int> g_varid_map;
+
+static int varid(const std::string& name) {
+    auto it = g_varid_map.find(name);
+    if (it != g_varid_map.end()) return it->second;
+    int id = (int)g_varid_names.size();
+    g_varid_names.push_back(name);
+    g_varid_map.emplace(name, id);
+    return id;
+}
+
 static std::string builtin_call_name(const std::string& raw) {
     if (raw == "typeof") return "typeof_fn";
     if (raw == "bool") return "bool_fn";
@@ -107,7 +119,7 @@ static std::string read_var_expr(LiftCtx& ctx, int spec, const std::string& name
         if (name == "x") return "Value(self->x)";
         if (name == "y") return "Value(self->y)";
     }
-    return "kwik_scope_get(self, " + std::to_string(spec) + ", " + quote(name) + ")";
+    return "kwik_scope_get(self, " + std::to_string(spec) + ", " + std::to_string(varid(name)) + ")";
 }
 
 static void emit_write_var(LiftCtx& ctx, std::ostream* out, int spec, const std::string& name,
@@ -136,7 +148,7 @@ static void emit_write_var(LiftCtx& ctx, std::ostream* out, int spec, const std:
         *out << "    self->y = (double)" << val << ";\n";
         return;
     }
-    *out << "    kwik_scope_set(self, " << spec << ", " << quote(name) << ", " << val << ");\n";
+    *out << "    kwik_scope_set(self, " << spec << ", " << std::to_string(varid(name)) << ", " << val << ");\n";
 }
 
 static std::string binop_helper(uint8_t op) {
@@ -243,7 +255,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     if (in.operand == -9) {
                         if (out)
                             *out << "    " << S(d() - 1) << " = kwik_inst_get(self, " << S(d() - 1)
-                                 << ", " << quote(name) << ");\n";
+                                 << ", " << std::to_string(varid(name)) << ");\n";
                         pop(1);
                         push(16);
                     } else {
@@ -261,7 +273,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                         std::string fn = wref ? "kwik_array_wref_at" : "kwik_array_get_at";
                         if (out)
                             *out << "    " << S(d() - 3) << " = " << fn << "(self, " << S(d() - 3)
-                                 << ", " << quote(name) << ", " << S(d() - 1) << ");\n";
+                                 << ", " << std::to_string(varid(name)) << ", " << S(d() - 1) << ");\n";
                         pop(3);
                         push(16);
                     } else if (spec.is_const && spec.cval == -7) {
@@ -289,7 +301,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                         std::string fn = wref ? "kwik_array_wref" : "kwik_array_get";
                         if (out)
                             *out << "    " << S(d() - 2) << " = " << fn << "(self, " << specexpr
-                                 << ", " << quote(name) << ", " << S(d() - 1) << ");\n";
+                                 << ", " << std::to_string(varid(name)) << ", " << S(d() - 1) << ");\n";
                         pop(2);
                         push(16);
                     }
@@ -298,20 +310,20 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     if (spec.is_const && spec.cval == -9) {
                         if (out)
                             *out << "    " << S(d() - 2) << " = kwik_inst_get(self, " << S(d() - 2)
-                                 << ", " << quote(name) << ");\n";
+                                 << ", " << std::to_string(varid(name)) << ");\n";
                         pop(2);
                         push(16);
                     } else {
                         if (out)
                             *out << "    " << S(d() - 1) << " = kwik_inst_get(self, " << S(d() - 1)
-                                 << ", " << quote(name) << ");\n";
+                                 << ", " << std::to_string(varid(name)) << ");\n";
                         pop(1);
                         push(16);
                     }
                 } else if (reftype == 0xE0) {
                     if (out)
                         *out << "    " << S(d()) << " = kwik_inst_get(self, Value("
-                             << (100000 + (int)in.operand) << ".0), " << quote(name) << ");\n";
+                             << (100000 + (int)in.operand) << ".0), " << std::to_string(varid(name)) << ");\n";
                     push(16);
                 } else {
                     warn(ctx, in.address, "unknown var reftype on push");
@@ -368,7 +380,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
             if (reftype == 0xA0) {
                 if (in.operand == -9) {
                     if (out)
-                        *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << quote(name)
+                        *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << std::to_string(varid(name))
                              << ", " << S(d() - 1) << ");\n";
                     pop(2);
                 } else {
@@ -381,7 +393,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     if (spec.is_const && spec.cval == -9) {
                         if (out)
                             *out << "    kwik_array_set_at(self, " << S(d() - 3) << ", "
-                                 << quote(name) << ", " << S(d() - 1) << ", " << S(d() - 4)
+                                 << std::to_string(varid(name)) << ", " << S(d() - 1) << ", " << S(d() - 4)
                                  << ");\n";
                         pop(4);
                     } else if (spec.is_const && spec.cval == -7) {
@@ -395,7 +407,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                         std::string specexpr = spec.is_const ? std::to_string(spec.cval)
                                                              : "(int)(double)" + S(d() - 2);
                         if (out)
-                            *out << "    kwik_array_set(self, " << specexpr << ", " << quote(name)
+                            *out << "    kwik_array_set(self, " << specexpr << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 1) << ", " << S(d() - 3) << ");\n";
                         pop(3);
                     }
@@ -404,7 +416,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     if (spec.is_const && spec.cval == -9) {
                         if (out)
                             *out << "    kwik_array_set_at(self, " << S(d() - 4) << ", "
-                                 << quote(name) << ", " << S(d() - 2) << ", " << S(d() - 1)
+                                 << std::to_string(varid(name)) << ", " << S(d() - 2) << ", " << S(d() - 1)
                                  << ");\n";
                         pop(4);
                     } else if (spec.is_const && spec.cval == -7) {
@@ -418,7 +430,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                         std::string specexpr = spec.is_const ? std::to_string(spec.cval)
                                                              : "(int)(double)" + S(d() - 3);
                         if (out)
-                            *out << "    kwik_array_set(self, " << specexpr << ", " << quote(name)
+                            *out << "    kwik_array_set(self, " << specexpr << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 2) << ", " << S(d() - 1) << ");\n";
                         pop(3);
                     }
@@ -428,12 +440,12 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     Slot spec = slot(0);
                     if (spec.is_const && spec.cval == -9) {
                         if (out)
-                            *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << quote(name)
+                            *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 3) << ");\n";
                         pop(3);
                     } else {
                         if (out)
-                            *out << "    kwik_inst_set(self, " << S(d() - 1) << ", " << quote(name)
+                            *out << "    kwik_inst_set(self, " << S(d() - 1) << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 2) << ");\n";
                         pop(2);
                     }
@@ -441,12 +453,12 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     Slot spec = slot(1);
                     if (spec.is_const && spec.cval == -9) {
                         if (out)
-                            *out << "    kwik_inst_set(self, " << S(d() - 3) << ", " << quote(name)
+                            *out << "    kwik_inst_set(self, " << S(d() - 3) << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 1) << ");\n";
                         pop(3);
                     } else {
                         if (out)
-                            *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << quote(name)
+                            *out << "    kwik_inst_set(self, " << S(d() - 2) << ", " << std::to_string(varid(name))
                                  << ", " << S(d() - 1) << ");\n";
                         pop(2);
                     }
@@ -454,7 +466,7 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
             } else if (reftype == 0xE0) {
                 if (out)
                     *out << "    kwik_inst_set(self, Value(" << (100000 + (int)in.operand)
-                         << ".0), " << quote(name) << ", " << S(d() - 1) << ");\n";
+                         << ".0), " << std::to_string(varid(name)) << ", " << S(d() - 1) << ");\n";
                 pop(1);
             } else {
                 warn(ctx, in.address, "unknown var reftype on pop");
@@ -1267,6 +1279,15 @@ bool emit_dir(const GameData& gd, const std::string& out_dir) {
         data << "const KwikSound* g_sound_table = nullptr;\n";
     }
     data << "int g_sound_count = " << ex.sounds.size() << ";\n";
+    if (!g_varid_names.empty()) {
+        data << "static const char* g_static_varnames_data[] = {\n";
+        for (const auto& n : g_varid_names) data << "    " << quote(n) << ",\n";
+        data << "};\n";
+        data << "const char* const* g_static_varnames = g_static_varnames_data;\n";
+    } else {
+        data << "const char* const* g_static_varnames = nullptr;\n";
+    }
+    data << "int g_static_varname_count = " << g_varid_names.size() << ";\n";
     data << "}\n\n";
     data.close();
 

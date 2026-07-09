@@ -20,3 +20,6 @@ if(NOT Z_LIB)
 endif()
 
 target_link_libraries(kwikc PRIVATE ${BZ2_LIB} ${Z_LIB})
+
+add_executable(kwik_repack_textures source/repack_textures.cpp)
+set_target_properties(kwik_repack_textures PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

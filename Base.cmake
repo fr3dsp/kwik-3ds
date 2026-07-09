@@ -57,9 +57,49 @@ if(NINTENDO_3DS)
         BYPRODUCTS ${KWIK_3DSX_OUT})
 
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat)
-        add_custom_command(TARGET game POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat ${KWIK_SDCARD_APP_DIR}/Assets.dat)
+        set(KWIK_REPACK_TOOL "" CACHE FILEPATH
+            "Path 2 texture repack tool.")
+        if(NOT KWIK_REPACK_TOOL)
+            file(GLOB KWIK_REPACK_TOOL_CANDIDATES
+                 ${KWIK_DIR}/build*/compiler/kwik_repack_textures
+                 ${KWIK_DIR}/build*/compiler/kwik_repack_textures.exe)
+            list(LENGTH KWIK_REPACK_TOOL_CANDIDATES KWIK_REPACK_TOOL_CANDIDATE_COUNT)
+            if(KWIK_REPACK_TOOL_CANDIDATE_COUNT GREATER 0)
+                list(GET KWIK_REPACK_TOOL_CANDIDATES 0 KWIK_REPACK_TOOL_FOUND)
+                set(KWIK_REPACK_TOOL ${KWIK_REPACK_TOOL_FOUND} CACHE FILEPATH "" FORCE)
+                message(STATUS "kwik: auto-detected texture repack tool at ${KWIK_REPACK_TOOL}")
+            else()
+                message(STATUS "no repack 2ool found lol!")
+            endif()
+        endif()
+        find_program(KWIK_TEX3DS tex3ds PATHS $ENV{DEVKITPRO}/tools/bin)
+
+        if(KWIK_REPACK_TOOL AND KWIK_TEX3DS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp)
+            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp KWIK_IMG_COUNT_LINE
+                 REGEX "g_image_count = ")
+            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp KWIK_SND_COUNT_LINE
+                 REGEX "g_sound_count = ")
+            string(REGEX MATCH "[0-9]+" KWIK_IMAGE_COUNT "${KWIK_IMG_COUNT_LINE}")
+            string(REGEX MATCH "[0-9]+" KWIK_SOUND_COUNT "${KWIK_SND_COUNT_LINE}")
+
+            if(KWIK_IMAGE_COUNT MATCHES "^[0-9]+$" AND KWIK_SOUND_COUNT MATCHES "^[0-9]+$")
+                add_custom_command(TARGET game POST_BUILD
+                    COMMAND ${KWIK_REPACK_TOOL}
+                            ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat
+                            ${KWIK_SDCARD_APP_DIR}/Assets.dat
+                            ${KWIK_IMAGE_COUNT} ${KWIK_SOUND_COUNT} ${KWIK_TEX3DS}
+                    COMMENT "kwik: repacking textures to .t3x via ${KWIK_REPACK_TOOL}")
+            else()
+                message(WARNING "kwik: could not read g_image_count/g_sound_count from game_data.cpp, falling back to a plain Assets.dat copy")
+                add_custom_command(TARGET game POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat ${KWIK_SDCARD_APP_DIR}/Assets.dat)
+            endif()
+        else()
+            add_custom_command(TARGET game POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat ${KWIK_SDCARD_APP_DIR}/Assets.dat)
+        endif()
     else()
         message(WARNING "kwik: Assets.dat not found next to this project")
     endif()

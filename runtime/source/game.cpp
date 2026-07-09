@@ -15,6 +15,8 @@
 #include <cstring>
 #include <filesystem>
 #include <random>
+#include <unordered_map>
+#include <unordered_set>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -38,6 +40,90 @@ static inline void kwik_sleep_us(long long microseconds) {
 std::vector<std::shared_ptr<Instance>> g_instances;
 Instance* g_other_ptr = nullptr;
 Instance* g_dummy_instance = nullptr;
+
+bool inst_bbox(Instance* inst, double px, double py, double& l, double& t, double& r, double& b);
+
+static constexpr double kGridCellSize = 128.0;
+static std::unordered_map<int, Instance*> g_id_index;
+static std::unordered_map<int, std::vector<Instance*>> g_type_index;
+static std::unordered_map<int64_t, std::vector<Instance*>> g_grid_index;
+static std::unordered_map<int, std::vector<int>> g_family_members;
+static bool g_family_built = false;
+
+static int64_t grid_cell_key(int cx, int cy) {
+    return ((int64_t)(uint32_t)cx << 32) | (uint32_t)(uint32_t)cy;
+}
+
+static void build_family_members() {
+    g_family_built = true;
+    g_family_members.clear();
+    for (int obj = 0; obj < g_object_count_rt; ++obj) {
+        int cur = obj;
+        int guard = 0;
+        while (cur >= 0 && cur < g_object_count_rt && guard++ < 128) {
+            g_family_members[cur].push_back(obj);
+            cur = g_objects_rt[cur].parent_index;
+        }
+    }
+}
+
+static void rebuild_instance_index() {
+    if (!g_family_built) build_family_members();
+    g_id_index.clear();
+    g_type_index.clear();
+    g_grid_index.clear();
+    for (auto& sp : g_instances) {
+        Instance* inst = sp.get();
+        if (inst->dead || inst->is_struct) continue;
+        g_id_index[inst->id] = inst;
+        g_type_index[inst->object_index].push_back(inst);
+
+        double l, t, r, b;
+        int cx0, cy0, cx1, cy1;
+        if (inst_bbox(inst, inst->x, inst->y, l, t, r, b)) {
+            cx0 = (int)std::floor(l / kGridCellSize);
+            cy0 = (int)std::floor(t / kGridCellSize);
+            cx1 = (int)std::floor(r / kGridCellSize);
+            cy1 = (int)std::floor(b / kGridCellSize);
+        } else {
+            cx0 = cx1 = (int)std::floor(inst->x / kGridCellSize);
+            cy0 = cy1 = (int)std::floor(inst->y / kGridCellSize);
+        }
+        cx1 = std::min(cx1, cx0 + 32);
+        cy1 = std::min(cy1, cy0 + 32);
+        for (int gy = cy0; gy <= cy1; ++gy)
+            for (int gx = cx0; gx <= cx1; ++gx)
+                g_grid_index[grid_cell_key(gx, gy)].push_back(inst);
+    }
+}
+
+template <typename F>
+static void for_each_candidate_in_rect(double l, double t, double r, double b, F&& f) {
+    int cx0 = (int)std::floor(l / kGridCellSize);
+    int cy0 = (int)std::floor(t / kGridCellSize);
+    int cx1 = (int)std::floor(r / kGridCellSize);
+    int cy1 = (int)std::floor(b / kGridCellSize);
+    cx1 = std::min(cx1, cx0 + 64);
+    cy1 = std::min(cy1, cy0 + 64);
+    for (int gy = cy0; gy <= cy1; ++gy) {
+        for (int gx = cx0; gx <= cx1; ++gx) {
+            auto it = g_grid_index.find(grid_cell_key(gx, gy));
+            if (it == g_grid_index.end()) continue;
+            for (Instance* inst : it->second) f(inst);
+        }
+    }
+}
+
+template <typename F>
+static void for_each_of_family(int who, F&& f) {
+    auto fam = g_family_members.find(who);
+    if (fam == g_family_members.end()) return;
+    for (int member : fam->second) {
+        auto it = g_type_index.find(member);
+        if (it == g_type_index.end()) continue;
+        for (Instance* inst : it->second) f(inst);
+    }
+}
 
 int g_current_room = -1;
 int g_pending_room = -1;
@@ -166,12 +252,21 @@ Instance* kwik_instance_by_id(int id) {
         auto it = g_structs.find(id);
         return it == g_structs.end() ? nullptr : it->second.get();
     }
+    auto it = g_id_index.find(id);
+    if (it != g_id_index.end() && !it->second->dead) return it->second;
     for (auto& sp : g_instances)
         if (!sp->dead && sp->id == id) return sp.get();
     return nullptr;
 }
 
 Instance* kwik_first_instance(int who) {
+    if (who >= 0 && who < 100000) {
+        Instance* found = nullptr;
+        for_each_of_family(who, [&](Instance* inst) {
+            if (!found && inst_matches(inst, who)) found = inst;
+        });
+        if (found) return found;
+    }
     for (auto& sp : g_instances)
         if (inst_matches(sp.get(), who)) return sp.get();
     return nullptr;
@@ -188,6 +283,12 @@ std::vector<Instance*> kwik_instances_matching(Instance* self, int who) {
         return out;
     }
     if (who == -4) return out;
+    if (who >= 0 && who < 100000) {
+        for_each_of_family(who, [&](Instance* inst) {
+            if (inst_matches(inst, who)) out.push_back(inst);
+        });
+        return out;
+    }
     for (auto& sp : g_instances)
         if (inst_matches(sp.get(), who)) out.push_back(sp.get());
     return out;
@@ -221,11 +322,13 @@ static std::vector<std::pair<int, int>> g_async_queue;
 void kwik_queue_async(int kind, int map_id) { g_async_queue.push_back({kind, map_id}); }
 
 static int inst_sprite(Instance* inst) {
-    auto it = inst->vars.find("sprite_index");
+    static const int ID_sprite_index = kwik_intern_varname("sprite_index");
+    auto it = inst->vars.find(ID_sprite_index);
     return it == inst->vars.end() ? -1 : (int)(double)it->second;
 }
 static int inst_mask(Instance* inst) {
-    auto it = inst->vars.find("mask_index");
+    static const int ID_mask_index = kwik_intern_varname("mask_index");
+    auto it = inst->vars.find(ID_mask_index);
     int m = it == inst->vars.end() ? -1 : (int)(double)it->second;
     return m >= 0 ? m : inst_sprite(inst);
 }
@@ -244,9 +347,12 @@ static KBox make_box(Instance* inst, double px, double py) {
     const KwikSprite* s = kwik_sprite_at(spr);
     if (!s) return b;
     double xs = 1.0, ys = 1.0, ang = 0.0;
-    auto ix = inst->vars.find("image_xscale");
-    auto iy = inst->vars.find("image_yscale");
-    auto ia = inst->vars.find("image_angle");
+    static const int ID_image_xscale = kwik_intern_varname("image_xscale");
+    static const int ID_image_yscale = kwik_intern_varname("image_yscale");
+    static const int ID_image_angle = kwik_intern_varname("image_angle");
+    auto ix = inst->vars.find(ID_image_xscale);
+    auto iy = inst->vars.find(ID_image_yscale);
+    auto ia = inst->vars.find(ID_image_angle);
     if (ix != inst->vars.end()) xs = (double)ix->second;
     if (iy != inst->vars.end()) ys = (double)iy->second;
     if (ia != inst->vars.end()) ang = (double)ia->second;
@@ -324,10 +430,14 @@ static bool point_in_instance(Instance* inst, double at_x, double at_y, double p
     const KwikSprite* s = kwik_sprite_at(spr_idx);
     if (!s) return false;
     double xs = 1.0, ys = 1.0, ang = 0.0, img = 0.0;
-    auto ix = inst->vars.find("image_xscale");
-    auto iy = inst->vars.find("image_yscale");
-    auto ia = inst->vars.find("image_angle");
-    auto ii = inst->vars.find("image_index");
+    static const int ID_image_xscale = kwik_intern_varname("image_xscale");
+    static const int ID_image_yscale = kwik_intern_varname("image_yscale");
+    static const int ID_image_angle = kwik_intern_varname("image_angle");
+    static const int ID_image_index = kwik_intern_varname("image_index");
+    auto ix = inst->vars.find(ID_image_xscale);
+    auto iy = inst->vars.find(ID_image_yscale);
+    auto ia = inst->vars.find(ID_image_angle);
+    auto ii = inst->vars.find(ID_image_index);
     if (ix != inst->vars.end()) xs = (double)ix->second;
     if (iy != inst->vars.end()) ys = (double)iy->second;
     if (ia != inst->vars.end()) ang = (double)ia->second;
@@ -430,6 +540,15 @@ static bool boxes_overlap(double al, double at, double ar, double ab,
 
 Instance* collision_at(Instance* self, double px, double py, int who, bool) {
     if (!self) return nullptr;
+    double l, t, r, b;
+    if (who >= 0 && who < 100000 && inst_bbox(self, px, py, l, t, r, b)) {
+        Instance* found = nullptr;
+        for_each_candidate_in_rect(l, t, r, b, [&](Instance* other) {
+            if (found || other == self || !inst_matches(other, who)) return;
+            if (instances_hit(self, px, py, other)) found = other;
+        });
+        return found;
+    }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if (other == self || !inst_matches(other, who)) continue;
@@ -439,6 +558,16 @@ Instance* collision_at(Instance* self, double px, double py, int who, bool) {
 }
 
 static Instance* collision_point_at(Instance* self, double px, double py, int who) {
+    if (who >= 0 && who < 100000) {
+        Instance* found = nullptr;
+        for_each_candidate_in_rect(px, py, px, py, [&](Instance* other) {
+            if (found || other == self || !inst_matches(other, who)) return;
+            bool hit = inst_masks(other) ? point_in_instance(other, other->x, other->y, px, py)
+                                         : point_in_box(make_box(other, other->x, other->y), px, py);
+            if (hit) found = other;
+        });
+        return found;
+    }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if (other == self || !inst_matches(other, who)) continue;
@@ -462,6 +591,15 @@ static Instance* collision_rect_at(Instance* self, double x1, double y1, double 
     a.x = 0;
     a.y = 0;
     a.valid = true;
+    if (who >= 0 && who < 100000) {
+        Instance* found = nullptr;
+        for_each_candidate_in_rect(a.lx0, a.ly0, a.lx1, a.ly1, [&](Instance* other) {
+            if (found || other == self || !inst_matches(other, who)) return;
+            KBox b = make_box(other, other->x, other->y);
+            if (boxes_hit(a, b)) found = other;
+        });
+        return found;
+    }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if (other == self || !inst_matches(other, who)) continue;
@@ -578,7 +716,7 @@ static void fire(Instance* inst, int kind, int sub) {
     if (trace && inst->object_index >= 0 && inst->object_index < g_object_count_rt &&
         !std::strcmp(g_objects_rt[inst->object_index].name, trace)) {
         auto gv = [&](const char* n) -> double {
-            auto it = inst->vars.find(n);
+            auto it = inst->vars.find(kwik_intern_varname(n));
             return it == inst->vars.end() ? -999 : (double)it->second;
         };
         std::fprintf(stderr,
@@ -738,54 +876,83 @@ Value kwik_call_method(Instance* self, const Value& fnval, const Value& target,
     return Value();
 }
 
-static Value scope_get_special(Instance* inst, const char* name, bool& handled) {
+namespace varid {
+static const int x = kwik_intern_varname("x");
+static const int y = kwik_intern_varname("y");
+static const int id = kwik_intern_varname("id");
+static const int object_index = kwik_intern_varname("object_index");
+static const int visible = kwik_intern_varname("visible");
+static const int persistent = kwik_intern_varname("persistent");
+static const int depth = kwik_intern_varname("depth");
+static const int xprevious = kwik_intern_varname("xprevious");
+static const int yprevious = kwik_intern_varname("yprevious");
+static const int xstart = kwik_intern_varname("xstart");
+static const int ystart = kwik_intern_varname("ystart");
+static const int speed = kwik_intern_varname("speed");
+static const int direction = kwik_intern_varname("direction");
+static const int hspeed = kwik_intern_varname("hspeed");
+static const int vspeed = kwik_intern_varname("vspeed");
+static const int bbox_left = kwik_intern_varname("bbox_left");
+static const int bbox_right = kwik_intern_varname("bbox_right");
+static const int bbox_top = kwik_intern_varname("bbox_top");
+static const int bbox_bottom = kwik_intern_varname("bbox_bottom");
+static const int sprite_width = kwik_intern_varname("sprite_width");
+static const int sprite_height = kwik_intern_varname("sprite_height");
+static const int sprite_xoffset = kwik_intern_varname("sprite_xoffset");
+static const int sprite_yoffset = kwik_intern_varname("sprite_yoffset");
+static const int image_number = kwik_intern_varname("image_number");
+static const int image_xscale = kwik_intern_varname("image_xscale");
+static const int image_yscale = kwik_intern_varname("image_yscale");
+} // namespace varid
+
+static Value scope_get_special(Instance* inst, int vid, bool& handled) {
     handled = true;
-    if (!std::strcmp(name, "x")) return Value(inst->x);
-    if (!std::strcmp(name, "y")) return Value(inst->y);
-    if (!std::strcmp(name, "id")) return kwik_this(inst);
-    if (!std::strcmp(name, "object_index")) return Value((double)inst->object_index);
-    if (!std::strcmp(name, "visible")) return Value(inst->visible);
-    if (!std::strcmp(name, "persistent")) return Value(inst->persistent);
-    if (!std::strcmp(name, "depth")) return Value(inst->depth);
-    if (!std::strcmp(name, "xprevious")) return Value(inst->xprevious);
-    if (!std::strcmp(name, "yprevious")) return Value(inst->yprevious);
-    if (!std::strcmp(name, "xstart")) return Value(inst->xstart);
-    if (!std::strcmp(name, "ystart")) return Value(inst->ystart);
-    if (!std::strcmp(name, "speed")) return Value(inst->m_speed);
-    if (!std::strcmp(name, "direction")) return Value(inst->m_dir);
-    if (!std::strcmp(name, "hspeed")) return Value(inst->m_hs);
-    if (!std::strcmp(name, "vspeed")) return Value(inst->m_vs);
-    if (!std::strcmp(name, "bbox_left") || !std::strcmp(name, "bbox_right") ||
-        !std::strcmp(name, "bbox_top") || !std::strcmp(name, "bbox_bottom")) {
+    if (vid == varid::x) return Value(inst->x);
+    if (vid == varid::y) return Value(inst->y);
+    if (vid == varid::id) return kwik_this(inst);
+    if (vid == varid::object_index) return Value((double)inst->object_index);
+    if (vid == varid::visible) return Value(inst->visible);
+    if (vid == varid::persistent) return Value(inst->persistent);
+    if (vid == varid::depth) return Value(inst->depth);
+    if (vid == varid::xprevious) return Value(inst->xprevious);
+    if (vid == varid::yprevious) return Value(inst->yprevious);
+    if (vid == varid::xstart) return Value(inst->xstart);
+    if (vid == varid::ystart) return Value(inst->ystart);
+    if (vid == varid::speed) return Value(inst->m_speed);
+    if (vid == varid::direction) return Value(inst->m_dir);
+    if (vid == varid::hspeed) return Value(inst->m_hs);
+    if (vid == varid::vspeed) return Value(inst->m_vs);
+    if (vid == varid::bbox_left || vid == varid::bbox_right || vid == varid::bbox_top ||
+        vid == varid::bbox_bottom) {
         double l, t, r, b;
         if (!inst_bbox(inst, inst->x, inst->y, l, t, r, b)) return Value(inst->x);
-        if (!std::strcmp(name, "bbox_left")) return Value(l);
-        if (!std::strcmp(name, "bbox_right")) return Value(r - 1);
-        if (!std::strcmp(name, "bbox_top")) return Value(t);
+        if (vid == varid::bbox_left) return Value(l);
+        if (vid == varid::bbox_right) return Value(r - 1);
+        if (vid == varid::bbox_top) return Value(t);
         return Value(b - 1);
     }
-    if (!std::strcmp(name, "sprite_width") || !std::strcmp(name, "sprite_height")) {
+    if (vid == varid::sprite_width || vid == varid::sprite_height) {
         int spr = inst_sprite(inst);
         double xs = 1, ys = 1;
-        auto ix = inst->vars.find("image_xscale");
-        auto iy = inst->vars.find("image_yscale");
+        auto ix = inst->vars.find(varid::image_xscale);
+        auto iy = inst->vars.find(varid::image_yscale);
         if (ix != inst->vars.end()) xs = (double)ix->second;
         if (iy != inst->vars.end()) ys = (double)iy->second;
         if (const KwikSprite* sd = kwik_sprite_at(spr)) {
-            if (!std::strcmp(name, "sprite_width")) return Value(sd->width * xs);
+            if (vid == varid::sprite_width) return Value(sd->width * xs);
             return Value(sd->height * ys);
         }
         return Value(0.0);
     }
-    if (!std::strcmp(name, "sprite_xoffset") || !std::strcmp(name, "sprite_yoffset")) {
+    if (vid == varid::sprite_xoffset || vid == varid::sprite_yoffset) {
         int spr = inst_sprite(inst);
         if (const KwikSprite* sd = kwik_sprite_at(spr)) {
-            if (!std::strcmp(name, "sprite_xoffset")) return Value((double)sd->origin_x);
+            if (vid == varid::sprite_xoffset) return Value((double)sd->origin_x);
             return Value((double)sd->origin_y);
         }
         return Value(0.0);
     }
-    if (!std::strcmp(name, "image_number")) {
+    if (vid == varid::image_number) {
         int spr = inst_sprite(inst);
         if (const KwikSprite* sd = kwik_sprite_at(spr)) return Value((double)sd->frame_count);
         return Value(0.0);
@@ -794,43 +961,43 @@ static Value scope_get_special(Instance* inst, const char* name, bool& handled) 
     return Value();
 }
 
-static bool scope_set_special(Instance* inst, const char* name, const Value& v) {
-    if (!std::strcmp(name, "x")) { inst->x = (double)v; return true; }
-    if (!std::strcmp(name, "y")) { inst->y = (double)v; return true; }
-    if (!std::strcmp(name, "visible")) { inst->visible = gml_truthy(v); return true; }
-    if (!std::strcmp(name, "persistent")) { inst->persistent = gml_truthy(v); return true; }
-    if (!std::strcmp(name, "depth")) { inst->depth = (double)v; return true; }
-    if (!std::strcmp(name, "xprevious")) { inst->xprevious = (double)v; return true; }
-    if (!std::strcmp(name, "yprevious")) { inst->yprevious = (double)v; return true; }
-    if (!std::strcmp(name, "xstart")) { inst->xstart = (double)v; return true; }
-    if (!std::strcmp(name, "ystart")) { inst->ystart = (double)v; return true; }
-    if (!std::strcmp(name, "speed")) { inst->m_speed = (double)v; sync_from_polar(inst); return true; }
-    if (!std::strcmp(name, "direction")) { inst->m_dir = (double)v; sync_from_polar(inst); return true; }
-    if (!std::strcmp(name, "hspeed")) { inst->m_hs = (double)v; sync_from_component(inst); return true; }
-    if (!std::strcmp(name, "vspeed")) { inst->m_vs = (double)v; sync_from_component(inst); return true; }
+static bool scope_set_special(Instance* inst, int vid, const Value& v) {
+    if (vid == varid::x) { inst->x = (double)v; return true; }
+    if (vid == varid::y) { inst->y = (double)v; return true; }
+    if (vid == varid::visible) { inst->visible = gml_truthy(v); return true; }
+    if (vid == varid::persistent) { inst->persistent = gml_truthy(v); return true; }
+    if (vid == varid::depth) { inst->depth = (double)v; return true; }
+    if (vid == varid::xprevious) { inst->xprevious = (double)v; return true; }
+    if (vid == varid::yprevious) { inst->yprevious = (double)v; return true; }
+    if (vid == varid::xstart) { inst->xstart = (double)v; return true; }
+    if (vid == varid::ystart) { inst->ystart = (double)v; return true; }
+    if (vid == varid::speed) { inst->m_speed = (double)v; sync_from_polar(inst); return true; }
+    if (vid == varid::direction) { inst->m_dir = (double)v; sync_from_polar(inst); return true; }
+    if (vid == varid::hspeed) { inst->m_hs = (double)v; sync_from_component(inst); return true; }
+    if (vid == varid::vspeed) { inst->m_vs = (double)v; sync_from_component(inst); return true; }
     return false;
 }
 
-static Value inst_get_raw(Instance* inst, const char* name) {
+static Value inst_get_raw(Instance* inst, int vid) {
     bool handled;
-    Value v = scope_get_special(inst, name, handled);
+    Value v = scope_get_special(inst, vid, handled);
     if (handled) return v;
-    auto it = inst->vars.find(name);
+    auto it = inst->vars.find(vid);
     if (it != inst->vars.end()) return it->second;
-    return kwik_builtin_get(inst, name);
+    return kwik_builtin_get(inst, kwik_varname_of(vid));
 }
 
-static void inst_set_raw(Instance* inst, const char* name, const Value& v) {
-    if (scope_set_special(inst, name, v)) return;
-    inst->var(name) = v;
+static void inst_set_raw(Instance* inst, int vid, const Value& v) {
+    if (scope_set_special(inst, vid, v)) return;
+    inst->var(vid) = v;
 }
 
-Value kwik_scope_get(Instance* self, int spec, const char* name) {
+Value kwik_scope_get(Instance* self, int spec, int name) {
     switch (spec) {
         case -1: case -9: return self ? inst_get_raw(self, name) : Value();
         case -2: return g_other_ptr ? inst_get_raw(g_other_ptr, name) : Value();
-        case -5: return global_var(name);
-        case -6: return kwik_builtin_get(self, name);
+        case -5: return global_var(kwik_varname_of(name));
+        case -6: return kwik_builtin_get(self, kwik_varname_of(name));
         default: {
             if (spec >= 0) {
                 Instance* t = kwik_first_instance(spec);
@@ -841,12 +1008,12 @@ Value kwik_scope_get(Instance* self, int spec, const char* name) {
     }
 }
 
-void kwik_scope_set(Instance* self, int spec, const char* name, const Value& v) {
+void kwik_scope_set(Instance* self, int spec, int name, const Value& v) {
     switch (spec) {
         case -1: case -9: if (self) inst_set_raw(self, name, v); return;
         case -2: if (g_other_ptr) inst_set_raw(g_other_ptr, name, v); return;
-        case -5: global_var(name) = v; return;
-        case -6: kwik_builtin_set(self, name, v); return;
+        case -5: global_var(kwik_varname_of(name)) = v; return;
+        case -6: kwik_builtin_set(self, kwik_varname_of(name), v); return;
         default:
             if (spec >= 0) {
                 for (auto& sp : g_instances)
@@ -857,20 +1024,20 @@ void kwik_scope_set(Instance* self, int spec, const char* name, const Value& v) 
     }
 }
 
-Value kwik_inst_get(Instance* self, const Value& who, const char* name) {
+Value kwik_inst_get(Instance* self, const Value& who, int name) {
     if (who.type == Value::OBJ && who.obj) return inst_get_raw(who.obj.get(), name);
     int w = (int)(double)who;
-    if (w == -5) return global_var(name);
-    if (w == -6) return kwik_builtin_get(self, name);
+    if (w == -5) return global_var(kwik_varname_of(name));
+    if (w == -6) return kwik_builtin_get(self, kwik_varname_of(name));
     Instance* t = kwik_resolve_target(self, who);
     return t ? inst_get_raw(t, name) : Value();
 }
 
-void kwik_inst_set(Instance* self, const Value& who, const char* name, const Value& v) {
+void kwik_inst_set(Instance* self, const Value& who, int name, const Value& v) {
     if (who.type == Value::OBJ && who.obj) { inst_set_raw(who.obj.get(), name, v); return; }
     int w = (int)(double)who;
-    if (w == -5) { global_var(name) = v; return; }
-    if (w == -6) { kwik_builtin_set(self, name, v); return; }
+    if (w == -5) { global_var(kwik_varname_of(name)) = v; return; }
+    if (w == -6) { kwik_builtin_set(self, kwik_varname_of(name), v); return; }
     if (w >= 0 && w < 100000) {
         for (auto& sp : g_instances)
             if (inst_matches(sp.get(), w)) inst_set_raw(sp.get(), name, v);
@@ -884,11 +1051,11 @@ Value kwik_array_elem(const Value& slot, int idx);
 void kwik_array_store(Value& slot, int idx, const Value& v);
 Value kwik_array_wslot(Value& slot, int idx);
 
-static Value* scope_slot(Instance* self, int spec, const char* name) {
+static Value* scope_slot(Instance* self, int spec, int name) {
     switch (spec) {
         case -1: case -9: case -6: return self ? &self->var(name) : nullptr;
         case -2: return g_other_ptr ? &g_other_ptr->var(name) : nullptr;
-        case -5: return &global_var(name);
+        case -5: return &global_var(kwik_varname_of(name));
         default: {
             if (spec >= 0) {
                 Instance* t = kwik_first_instance(spec);
@@ -932,17 +1099,17 @@ static bool builtin_array_set(Instance* self, const char* name, int idx, const V
     return false;
 }
 
-Value kwik_array_get(Instance* self, int spec, const char* name, const Value& idx) {
+Value kwik_array_get(Instance* self, int spec, int name, const Value& idx) {
     int i = (int)(double)idx;
     bool handled;
-    Value bv = builtin_array_get(self, name, i, handled);
+    Value bv = builtin_array_get(self, kwik_varname_of(name), i, handled);
     if (handled) return bv;
     Value* slot = scope_slot(self, spec, name);
     if (!slot) return Value();
     return kwik_array_elem(*slot, i);
 }
 
-Value kwik_array_get_at(Instance* self, const Value& who, const char* name, const Value& idx) {
+Value kwik_array_get_at(Instance* self, const Value& who, int name, const Value& idx) {
     if (who.type == Value::OBJ && who.obj)
         return kwik_array_elem(who.obj->var(name), (int)(double)idx);
     int w = (int)(double)who;
@@ -953,15 +1120,15 @@ Value kwik_array_get_at(Instance* self, const Value& who, const char* name, cons
     return kwik_array_elem(t->var(name), (int)(double)idx);
 }
 
-void kwik_array_set(Instance* self, int spec, const char* name, const Value& idx, const Value& v) {
+void kwik_array_set(Instance* self, int spec, int name, const Value& idx, const Value& v) {
     int i = (int)(double)idx;
-    if (builtin_array_set(self, name, i, v)) return;
+    if (builtin_array_set(self, kwik_varname_of(name), i, v)) return;
     Value* slot = scope_slot(self, spec, name);
     if (!slot) return;
     kwik_array_store(*slot, i, v);
 }
 
-void kwik_array_set_at(Instance* self, const Value& who, const char* name, const Value& idx,
+void kwik_array_set_at(Instance* self, const Value& who, int name, const Value& idx,
                        const Value& v) {
     if (who.type == Value::OBJ && who.obj) {
         kwik_array_store(who.obj->var(name), (int)(double)idx, v);
@@ -976,13 +1143,13 @@ void kwik_array_set_at(Instance* self, const Value& who, const char* name, const
     if (t) kwik_array_store(t->var(name), (int)(double)idx, v);
 }
 
-Value kwik_array_wref(Instance* self, int spec, const char* name, const Value& idx) {
+Value kwik_array_wref(Instance* self, int spec, int name, const Value& idx) {
     Value* slot = scope_slot(self, spec, name);
     if (!slot) return Value();
     return kwik_array_wslot(*slot, (int)(double)idx);
 }
 
-Value kwik_array_wref_at(Instance* self, const Value& who, const char* name, const Value& idx) {
+Value kwik_array_wref_at(Instance* self, const Value& who, int name, const Value& idx) {
     if (who.type == Value::OBJ && who.obj)
         return kwik_array_wslot(who.obj->var(name), (int)(double)idx);
     Instance* t = kwik_resolve_target(self, who);
@@ -1113,7 +1280,7 @@ Value kwik_builtin_get(Instance* self, const char* name) {
     }
     if (self) {
         bool handled;
-        Value v = scope_get_special(self, name, handled);
+        Value v = scope_get_special(self, kwik_intern_varname(name), handled);
         if (handled) return v;
         if (self->has(name)) return self->var(name);
     }
@@ -1131,7 +1298,7 @@ void kwik_builtin_set(Instance* self, const char* name, const Value& v) {
     if (self && !std::strcmp(name, "path_index")) {
         int pth = (int)(double)v;
         if (pth < 0) {
-            self->vars.erase("__kwik_path");
+            self->vars.erase(kwik_intern_varname("__kwik_path"));
         } else {
             self->var("__kwik_path") = Value((double)pth);
             if (!self->has("path_position")) self->var("path_position") = Value(0.0);
@@ -1142,7 +1309,7 @@ void kwik_builtin_set(Instance* self, const char* name, const Value& v) {
         }
         return;
     }
-    if (self) inst_set_raw(self, name, v);
+    if (self) inst_set_raw(self, kwik_intern_varname(name), v);
 }
 
 GMLFN(event_user) {
@@ -1328,6 +1495,14 @@ GMLFN(instance_nearest) {
     int who = (int)(double)args[2];
     Instance* best = nullptr;
     double bd = 1e30;
+    if (who >= 0 && who < 100000) {
+        for_each_of_family(who, [&](Instance* inst) {
+            if (inst == self || !inst_matches(inst, who)) return;
+            double d = std::hypot(inst->x - px, inst->y - py);
+            if (d < bd) { bd = d; best = inst; }
+        });
+        return Value(best ? (double)best->id : -4.0);
+    }
     for (auto& sp : g_instances) {
         if (sp.get() == self || !inst_matches(sp.get(), who)) continue;
         double d = std::hypot(sp->x - px, sp->y - py);
@@ -1378,6 +1553,18 @@ GMLFN(instance_place_list) {
     int list = (int)(double)args[3];
     double px = (double)args[0], py = (double)args[1];
     int n = 0;
+    double l, t, r, b;
+    if (who >= 0 && who < 100000 && inst_bbox(self, px, py, l, t, r, b)) {
+        std::unordered_set<Instance*> seen;
+        for_each_candidate_in_rect(l, t, r, b, [&](Instance* other) {
+            if (other == self || !inst_matches(other, who) || !seen.insert(other).second) return;
+            if (instances_hit(self, px, py, other)) {
+                kwik_ds_list_push(list, Value((double)other->id));
+                ++n;
+            }
+        });
+        return Value((double)n);
+    }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if (other == self || !inst_matches(other, who)) continue;
@@ -1403,6 +1590,19 @@ GMLFN(collision_rectangle_list) {
     a.valid = true;
     bool notme = gml_truthy(args[5]);
     int n = 0;
+    if (who >= 0 && who < 100000) {
+        std::unordered_set<Instance*> seen;
+        for_each_candidate_in_rect(a.lx0, a.ly0, a.lx1, a.ly1, [&](Instance* other) {
+            if ((notme && other == self) || !inst_matches(other, who) || !seen.insert(other).second)
+                return;
+            KBox b = make_box(other, other->x, other->y);
+            if (boxes_hit(a, b)) {
+                kwik_ds_list_push(list, Value((double)other->id));
+                ++n;
+            }
+        });
+        return Value((double)n);
+    }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if ((notme && other == self) || !inst_matches(other, who)) continue;
@@ -1559,7 +1759,8 @@ GMLFN(keyboard_clear) {
 
 GMLFN(alarm_set) {
     if (!self || argc < 2) return Value();
-    auto it = self->vars.find("alarm");
+    static const int ID_alarm = kwik_intern_varname("alarm");
+    auto it = self->vars.find(ID_alarm);
     if (it != self->vars.end() && it->second.type == Value::ARR && it->second.arr) {
         int idx = (int)(double)args[0];
         if (idx >= 0 && (size_t)idx < it->second.arr->items.size())
@@ -2309,14 +2510,15 @@ GMLFN(path_start) {
 GMLFN(path_end) {
     (void)args; (void)argc;
     if (self) {
-        self->vars.erase("__kwik_path");
-        self->vars.erase("__kwik_path_end");
+        self->vars.erase(kwik_intern_varname("__kwik_path"));
+        self->vars.erase(kwik_intern_varname("__kwik_path_end"));
     }
     return Value();
 }
 
 static void step_path(Instance* inst) {
-    auto it = inst->vars.find("__kwik_path");
+    static const int ID_kwik_path = kwik_intern_varname("__kwik_path");
+    auto it = inst->vars.find(ID_kwik_path);
     if (it == inst->vars.end()) return;
     int path = (int)(double)it->second;
     double len = kwik_path_length(path);
@@ -2348,8 +2550,8 @@ static void step_path(Instance* inst) {
     if (ended) {
         int endaction = (int)(double)inst->var("__kwik_path_end");
         if (endaction == 0) {
-            inst->vars.erase("__kwik_path");
-            inst->vars.erase("__kwik_path_end");
+            inst->vars.erase(kwik_intern_varname("__kwik_path"));
+            inst->vars.erase(kwik_intern_varname("__kwik_path_end"));
         }
         fire(inst, EVK_PATH_ENDED, 0);
     }
@@ -2360,7 +2562,7 @@ static void step_motion(Instance* inst) {
     if (trmove && inst->object_index >= 0 && inst->object_index < g_object_count_rt &&
         !std::strcmp(g_objects_rt[inst->object_index].name, trmove)) {
         auto gv = [&](const char* n) -> double {
-            auto it = inst->vars.find(n);
+            auto it = inst->vars.find(kwik_intern_varname(n));
             return it == inst->vars.end() ? -999 : (double)it->second;
         };
         std::fprintf(stderr,
@@ -2372,11 +2574,14 @@ static void step_motion(Instance* inst) {
     inst->xprevious = inst->x;
     inst->yprevious = inst->y;
     double grav = 0, gdir = 270, fric = 0;
-    auto ig = inst->vars.find("gravity");
+    static const int ID_gravity = kwik_intern_varname("gravity");
+    static const int ID_gravity_direction = kwik_intern_varname("gravity_direction");
+    static const int ID_friction = kwik_intern_varname("friction");
+    auto ig = inst->vars.find(ID_gravity);
     if (ig != inst->vars.end()) grav = (double)ig->second;
-    auto igd = inst->vars.find("gravity_direction");
+    auto igd = inst->vars.find(ID_gravity_direction);
     if (igd != inst->vars.end()) gdir = (double)igd->second;
-    auto ifr = inst->vars.find("friction");
+    auto ifr = inst->vars.find(ID_friction);
     if (ifr != inst->vars.end()) fric = (double)ifr->second;
     if (grav != 0.0) {
         double r = gdir * M_PI / 180.0;
@@ -2397,7 +2602,8 @@ static void step_motion(Instance* inst) {
 }
 
 static void run_alarms(Instance* inst) {
-    auto it = inst->vars.find("alarm");
+    static const int ID_alarm = kwik_intern_varname("alarm");
+    auto it = inst->vars.find(ID_alarm);
     if (it == inst->vars.end() || it->second.type != Value::ARR || !it->second.arr) return;
     auto& items = it->second.arr->items;
     for (size_t i = 0; i < items.size() && i < 12; ++i) {
@@ -2420,14 +2626,16 @@ static void run_animation(Instance* inst) {
     const KwikSprite& s = *sdef;
     if (s.frame_count <= 0) return;
     double imgspd = 1.0;
-    auto it = inst->vars.find("image_speed");
+    static const int ID_image_speed = kwik_intern_varname("image_speed");
+    static const int ID_image_index = kwik_intern_varname("image_index");
+    auto it = inst->vars.find(ID_image_speed);
     if (it != inst->vars.end()) imgspd = (double)it->second;
     double base = s.speed_type == 0 ? s.speed / std::max(1.0, g_room_speed_v) : s.speed;
     if (base <= 0) base = 1.0;
     double adv = base * imgspd;
     if (adv == 0.0) return;
     double idx = 0;
-    auto ii = inst->vars.find("image_index");
+    auto ii = inst->vars.find(ID_image_index);
     if (ii != inst->vars.end()) idx = (double)ii->second;
     idx += adv;
     bool wrapped = false;
@@ -2956,6 +3164,7 @@ static void maybe_force_room() {
 static void run_step_phase() {
     size_t n;
 
+    rebuild_instance_index();
     debug_globals_tick();
     maybe_snapshot();
     maybe_force_room();
@@ -3127,7 +3336,7 @@ static void run_step_phase() {
                                  ? g_objects_rt[in->object_index].name
                                  : "?";
             auto gv = [&](const char* n) -> double {
-                auto it = in->vars.find(n);
+                auto it = in->vars.find(kwik_intern_varname(n));
                 return it == in->vars.end() ? -1 : (double)it->second;
             };
             std::fprintf(stderr,
@@ -3144,7 +3353,7 @@ static void run_step_phase() {
             }
             static const char* extra_var = std::getenv("KWIK_DEBUG_VAR");
             if (extra_var && *extra_var) {
-                auto it = in->vars.find(extra_var);
+                auto it = in->vars.find(kwik_intern_varname(extra_var));
                 if (it == in->vars.end())
                     std::fprintf(stderr, " %s=<unset>", extra_var);
                 else if (it->second.type == Value::STR)
@@ -3163,12 +3372,14 @@ static std::string executable_dir() {
     DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
     if (n == 0 || n == MAX_PATH) return "";
     return std::filesystem::path(buf).parent_path().string();
-#else
+#elif !defined(__3DS__)
     char buf[4096];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n <= 0) return "";
     buf[n] = '\0';
     return std::filesystem::path(buf).parent_path().string();
+#else
+    return "";
 #endif
 }
 

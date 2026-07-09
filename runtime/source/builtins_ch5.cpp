@@ -103,7 +103,8 @@ GMLFN(variable_struct_get_names) {
     (void)self;
     Value out = mk_array();
     if (argc >= 1 && args[0].type == Value::OBJ && args[0].obj)
-        for (const auto& kv : args[0].obj->vars) out.arr->items.push_back(Value(kv.first));
+        for (const auto& kv : args[0].obj->vars)
+            out.arr->items.push_back(Value(std::string(kwik_varname_of(kv.first))));
     return out;
 }
 
@@ -878,19 +879,19 @@ GMLFN(sprite_get_info) {
     Value out = kwik_new_object(self, nullptr, 0);
     if (idx < 0 || idx >= g_sprite_count || !out.obj) return out;
     const KwikSprite& s = g_sprites[idx];
-    auto& v = out.obj->vars;
-    v["width"] = Value((double)s.width);
-    v["height"] = Value((double)s.height);
-    v["xoffset"] = Value((double)s.origin_x);
-    v["yoffset"] = Value((double)s.origin_y);
-    v["bbox_left"] = Value((double)s.bbox_left);
-    v["bbox_top"] = Value((double)s.bbox_top);
-    v["bbox_right"] = Value((double)s.bbox_right);
-    v["bbox_bottom"] = Value((double)s.bbox_bottom);
-    v["num_subimages"] = Value((double)s.frame_count);
-    v["frame_speed"] = Value(s.speed);
-    v["frame_type"] = Value((double)s.speed_type);
-    v["name"] = Value(s.name);
+    Instance& v = *out.obj;
+    v.var("width") = Value((double)s.width);
+    v.var("height") = Value((double)s.height);
+    v.var("xoffset") = Value((double)s.origin_x);
+    v.var("yoffset") = Value((double)s.origin_y);
+    v.var("bbox_left") = Value((double)s.bbox_left);
+    v.var("bbox_top") = Value((double)s.bbox_top);
+    v.var("bbox_right") = Value((double)s.bbox_right);
+    v.var("bbox_bottom") = Value((double)s.bbox_bottom);
+    v.var("num_subimages") = Value((double)s.frame_count);
+    v.var("frame_speed") = Value(s.speed);
+    v.var("frame_type") = Value((double)s.speed_type);
+    v.var("name") = Value(s.name);
     return out;
 }
 GMLFN(sprite_get_speed_type) {

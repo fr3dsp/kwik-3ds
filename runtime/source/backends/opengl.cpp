@@ -604,6 +604,7 @@ unsigned int render_upload_texture(const unsigned char* rgba, int w, int h) {
 
 void render_register_evictable(unsigned int, TextureEvictFn, void*) {}
 void render_touch_texture(unsigned int) {}
+unsigned int render_upload_texture_t3x(const unsigned char*, unsigned int) { return 0; }
 
 void render_set_fog(bool on, unsigned int bgr) {
     static bool disabled = std::getenv("KWIK_NO_FOG") != nullptr;
