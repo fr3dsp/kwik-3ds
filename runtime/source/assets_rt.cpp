@@ -440,8 +440,17 @@ struct RtGlyph {
 
 struct RtFont {
     std::vector<RtGlyph> glyphs;
+    int index[256];
     double line_height = 16;
 };
+
+static void build_glyph_index(RtFont& f) {
+    for (int i = 0; i < 256; ++i) f.index[i] = -1;
+    for (size_t i = 0; i < f.glyphs.size(); ++i) {
+        int ch = f.glyphs[i].ch;
+        if (ch >= 0 && ch < 256 && f.index[ch] < 0) f.index[ch] = (int)i;
+    }
+}
 
 static std::vector<RtFont> g_rt_fonts;
 static std::vector<int> g_asset_font_map;
@@ -479,6 +488,7 @@ static void build_fonts() {
             rf.glyphs.push_back(rg);
         }
         rf.line_height = kf.size > 0 ? kf.size : maxh;
+        build_glyph_index(rf);
         g_asset_font_map[f] = (int)g_rt_fonts.size();
         g_rt_fonts.push_back(std::move(rf));
     }
@@ -513,6 +523,7 @@ int kwik_font_add_sprite(int spr, const std::string& mapping, bool prop, int sep
         rf.glyphs.push_back(rg);
     }
     rf.line_height = maxh;
+    build_glyph_index(rf);
     g_rt_fonts.push_back(std::move(rf));
     return (int)g_rt_fonts.size() - 1;
 }
@@ -525,6 +536,10 @@ void kwik_set_font_rt(int rt_font) {
 int kwik_get_font_rt() { return g_cur_font; }
 
 static const RtGlyph* find_glyph(const RtFont& f, int ch) {
+    if (ch >= 0 && ch < 256) {
+        int i = f.index[ch];
+        return i < 0 ? nullptr : &f.glyphs[i];
+    }
     for (const RtGlyph& g : f.glyphs)
         if (g.ch == ch) return &g;
     return nullptr;
@@ -645,6 +660,14 @@ void kwik_draw_text_rt(double x, double y, const std::string& text, double xs, d
     unsigned int col = render_get_color();
     double alpha = render_get_alpha();
 
+    unsigned int batch_tex = 0;
+    std::vector<GlyphQuad> batch;
+    auto flush_batch = [&]() {
+        if (!batch.empty()) render_draw_glyphs_colored(batch_tex, batch.data(),
+                                                        (int)batch.size(), col, alpha);
+        batch.clear();
+    };
+
     for (size_t li = 0; li < lines.size(); ++li) {
         double ox = 0;
         double w = line_width(f, text, lines[li].first, lines[li].second) * xs;
@@ -661,8 +684,10 @@ void kwik_draw_text_rt(double x, double y, const std::string& text, double xs, d
                     double lx = pen + g->offset * xs;
                     double ly = liney;
                     if (angle == 0.0) {
-                        render_draw_glyph_colored(img.tex, x + lx, y + ly, g->w * xs, g->h * ys,
-                                                  g->u0, g->v0, g->u1, g->v1, col, alpha);
+                        if (img.tex != batch_tex) flush_batch();
+                        batch_tex = img.tex;
+                        batch.push_back({x + lx, y + ly, g->w * xs, g->h * ys, g->u0, g->v0, g->u1,
+                                        g->v1});
                     } else {
                         double gx = x + lx * ca + ly * sa;
                         double gy = y - lx * sa + ly * ca;
@@ -674,6 +699,7 @@ void kwik_draw_text_rt(double x, double y, const std::string& text, double xs, d
             pen += g->shift * xs;
         }
     }
+    flush_batch();
 }
 
 }

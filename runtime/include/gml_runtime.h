@@ -8,10 +8,34 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace gml {
+
+#if defined(__cpp_lib_generic_unordered_lookup) && __cpp_lib_generic_unordered_lookup >= 201811L
+#define KWIK_STR_KEY(s) std::string_view(s)
+struct KwikStrHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+    size_t operator()(const std::string& s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+    size_t operator()(const char* s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
+template <typename V>
+using KwikStrMap = std::unordered_map<std::string, V, KwikStrHash, std::equal_to<>>;
+#else
+#define KWIK_STR_KEY(s) std::string(s)
+template <typename V>
+using KwikStrMap = std::unordered_map<std::string, V>;
+#endif
 
 struct Instance;
 struct GmlArray;
@@ -278,6 +302,7 @@ Value gml_gt(const Value& a, const Value& b);
 bool gml_truthy(const Value& a);
 
 Value& global_var(const std::string& name);
+Value& global_var(const char* name);
 Value kwik_scope_get(Instance* self, int spec, int var_id);
 void kwik_scope_set(Instance* self, int spec, int var_id, const Value& v);
 Value kwik_inst_get(Instance* self, const Value& who, int var_id);

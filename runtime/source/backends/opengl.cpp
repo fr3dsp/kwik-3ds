@@ -606,6 +606,12 @@ void render_register_evictable(unsigned int, TextureEvictFn, void*) {}
 void render_touch_texture(unsigned int) {}
 unsigned int render_upload_texture_t3x(const unsigned char*, unsigned int) { return 0; }
 
+unsigned int render_texture_from_surface(int id, int x, int y, int w, int h) {
+    (void)id; (void)x; (void)y; (void)w; (void)h;
+    return 0;
+}
+
+
 void render_set_fog(bool on, unsigned int bgr) {
     static bool disabled = std::getenv("KWIK_NO_FOG") != nullptr;
     if (disabled) return;
@@ -675,6 +681,14 @@ void render_draw_glyph_colored(unsigned int tex, double dx, double dy, double dw
     glTexCoord2f(u1, v1); glVertex2f(x1, y1);
     glTexCoord2f(u0, v1); glVertex2f(x0, y1);
     glEnd();
+}
+
+void render_draw_glyphs_colored(unsigned int tex, const GlyphQuad* quads, int count,
+                                unsigned int bgr, double alpha) {
+    for (int i = 0; i < count; ++i) {
+        const GlyphQuad& q = quads[i];
+        render_draw_glyph_colored(tex, q.x, q.y, q.w, q.h, q.u0, q.v0, q.u1, q.v1, bgr, alpha);
+    }
 }
 
 void render_draw_glyph(unsigned int tex, double dx, double dy, double dw, double dh,

@@ -425,96 +425,150 @@ static const MaskSet* inst_masks(Instance* inst) {
     return kwik_sprite_masks(inst_mask(inst));
 }
 
-static bool point_in_instance(Instance* inst, double at_x, double at_y, double px, double py) {
+struct MaskCtx {
+    const KwikSprite* s = nullptr;
+    const unsigned char* mask = nullptr;
+    int mask_w = 0, mask_h = 0, rowbytes = 0;
+    double at_x = 0, at_y = 0;
+    double xs = 1, ys = 1;
+    double cs = 1, sn = 0;
+    bool rot = false;
+};
+
+static bool mask_ctx_init(Instance* inst, double at_x, double at_y, MaskCtx& c) {
     int spr_idx = inst_mask(inst);
-    const KwikSprite* s = kwik_sprite_at(spr_idx);
-    if (!s) return false;
-    double xs = 1.0, ys = 1.0, ang = 0.0, img = 0.0;
+    c.s = kwik_sprite_at(spr_idx);
+    if (!c.s) return false;
+    double ang = 0.0, img = 0.0;
     static const int ID_image_xscale = kwik_intern_varname("image_xscale");
     static const int ID_image_yscale = kwik_intern_varname("image_yscale");
     static const int ID_image_angle = kwik_intern_varname("image_angle");
-    static const int ID_image_index = kwik_intern_varname("image_index");
     auto ix = inst->vars.find(ID_image_xscale);
     auto iy = inst->vars.find(ID_image_yscale);
     auto ia = inst->vars.find(ID_image_angle);
-    auto ii = inst->vars.find(ID_image_index);
-    if (ix != inst->vars.end()) xs = (double)ix->second;
-    if (iy != inst->vars.end()) ys = (double)iy->second;
+    if (ix != inst->vars.end()) c.xs = (double)ix->second;
+    if (iy != inst->vars.end()) c.ys = (double)iy->second;
     if (ia != inst->vars.end()) ang = (double)ia->second;
-    if (ii != inst->vars.end()) img = (double)ii->second;
-    if (std::fabs(xs) < 0.0001 || std::fabs(ys) < 0.0001) return false;
-
-    double dx = px - at_x;
-    double dy = py - at_y;
+    if (std::fabs(c.xs) < 0.0001 || std::fabs(c.ys) < 0.0001) return false;
+    c.at_x = at_x;
+    c.at_y = at_y;
     if (std::fabs(ang) > 0.0001) {
         double rad = ang * M_PI / 180.0;
-        double cs = std::cos(rad), sn = std::sin(rad);
-        double rx = cs * dx - sn * dy;
-        double ry = sn * dx + cs * dy;
-        dx = rx;
-        dy = ry;
+        c.cs = std::cos(rad);
+        c.sn = std::sin(rad);
+        c.rot = true;
     }
-    double local_x = dx / xs + s->origin_x;
-    double local_y = dy / ys + s->origin_y;
-    int lx = (int)local_x;
-    int ly = (int)local_y;
-    if (local_x < 0 || local_y < 0 || lx >= s->width || ly >= s->height) return false;
-
     const MaskSet* ms = kwik_sprite_masks(spr_idx);
     if (ms) {
+        static const int ID_image_index = kwik_intern_varname("image_index");
+        auto ii = inst->vars.find(ID_image_index);
+        if (ii != inst->vars.end()) img = (double)ii->second;
         int frame = ((int)img % ms->count + ms->count) % ms->count;
-        const unsigned char* mask = ms->data + (size_t)frame * ms->rowbytes * ms->h;
-        if (lx >= ms->w || ly >= ms->h) return false;
-        return (mask[ly * ms->rowbytes + (lx >> 3)] & (1 << (7 - (lx & 7)))) != 0;
+        c.mask = ms->data + (size_t)frame * ms->rowbytes * ms->h;
+        c.mask_w = ms->w;
+        c.mask_h = ms->h;
+        c.rowbytes = ms->rowbytes;
     }
     return true;
 }
 
-static bool instances_hit(Instance* a, double ax, double ay, Instance* b) {
-    KBox ka = make_box(a, ax, ay);
-    KBox kb = make_box(b, b->x, b->y);
-    if (!ka.valid || !kb.valid) return false;
-    double al, at, ar, ab, bl, bt, br, bb;
-    {
-        double cx[4], cy[4];
-        box_corners(ka, cx, cy);
-        al = ar = cx[0];
-        at = ab = cy[0];
-        for (int i = 1; i < 4; ++i) {
-            al = std::min(al, cx[i]);
-            ar = std::max(ar, cx[i]);
-            at = std::min(at, cy[i]);
-            ab = std::max(ab, cy[i]);
-        }
-        box_corners(kb, cx, cy);
-        bl = br = cx[0];
-        bt = bb = cy[0];
-        for (int i = 1; i < 4; ++i) {
-            bl = std::min(bl, cx[i]);
-            br = std::max(br, cx[i]);
-            bt = std::min(bt, cy[i]);
-            bb = std::max(bb, cy[i]);
-        }
+static bool mask_ctx_test(const MaskCtx& c, double px, double py) {
+    double dx = px - c.at_x;
+    double dy = py - c.at_y;
+    if (c.rot) {
+        double rx = c.cs * dx - c.sn * dy;
+        double ry = c.sn * dx + c.cs * dy;
+        dx = rx;
+        dy = ry;
     }
-    if (al >= br || bl >= ar || at >= bb || bt >= ab) return false;
+    double local_x = dx / c.xs + c.s->origin_x;
+    double local_y = dy / c.ys + c.s->origin_y;
+    int lx = (int)local_x;
+    int ly = (int)local_y;
+    if (local_x < 0 || local_y < 0 || lx >= c.s->width || ly >= c.s->height) return false;
+    if (c.mask) {
+        if (lx >= c.mask_w || ly >= c.mask_h) return false;
+        return (c.mask[ly * c.rowbytes + (lx >> 3)] & (1 << (7 - (lx & 7)))) != 0;
+    }
+    return true;
+}
 
-    bool precise_a = inst_masks(a) != nullptr;
-    bool precise_b = inst_masks(b) != nullptr;
-    if (!precise_a && !precise_b) return boxes_hit(ka, kb);
+static bool point_in_instance(Instance* inst, double at_x, double at_y, double px, double py) {
+    MaskCtx c;
+    if (!mask_ctx_init(inst, at_x, at_y, c)) return false;
+    return mask_ctx_test(c, px, py);
+}
 
-    int sx = (int)std::floor(std::max(al, bl));
-    int ex = (int)std::ceil(std::min(ar, br));
-    int sy = (int)std::floor(std::max(at, bt));
-    int ey = (int)std::ceil(std::min(ab, bb));
+static void box_extent(const KBox& k, double& l, double& t, double& r, double& b) {
+    double cx[4], cy[4];
+    box_corners(k, cx, cy);
+    l = r = cx[0];
+    t = b = cy[0];
+    for (int i = 1; i < 4; ++i) {
+        l = std::min(l, cx[i]);
+        r = std::max(r, cx[i]);
+        t = std::min(t, cy[i]);
+        b = std::max(b, cy[i]);
+    }
+}
+
+struct HitProbe {
+    Instance* inst = nullptr;
+    double px = 0, py = 0;
+    KBox box;
+    double l = 0, t = 0, r = 0, b = 0;
+    const MaskSet* masks = nullptr;
+    MaskCtx ctx;
+    bool ctx_ok = false;
+};
+
+static bool probe_init(Instance* a, double px, double py, HitProbe& p) {
+    p.inst = a;
+    p.px = px;
+    p.py = py;
+    p.box = make_box(a, px, py);
+    if (!p.box.valid) return false;
+    box_extent(p.box, p.l, p.t, p.r, p.b);
+    p.masks = inst_masks(a);
+    p.ctx_ok = false;
+    return true;
+}
+
+static bool probe_hits(HitProbe& p, Instance* b) {
+    KBox kb = make_box(b, b->x, b->y);
+    if (!kb.valid) return false;
+    double bl, bt, br, bb;
+    box_extent(kb, bl, bt, br, bb);
+    if (p.l >= br || bl >= p.r || p.t >= bb || bt >= p.b) return false;
+
+    const MaskSet* mb = inst_masks(b);
+    if (!p.masks && !mb) return boxes_hit(p.box, kb);
+
+    if (!p.ctx_ok) {
+        if (!mask_ctx_init(p.inst, p.px, p.py, p.ctx)) return false;
+        p.ctx_ok = true;
+    }
+    MaskCtx cb;
+    if (!mask_ctx_init(b, b->x, b->y, cb)) return false;
+    int sx = (int)std::floor(std::max(p.l, bl));
+    int ex = (int)std::ceil(std::min(p.r, br));
+    int sy = (int)std::floor(std::max(p.t, bt));
+    int ey = (int)std::ceil(std::min(p.b, bb));
     for (int py = sy; py < ey; ++py) {
         for (int px = sx; px < ex; ++px) {
             double wx = px + 0.5, wy = py + 0.5;
-            if (!point_in_instance(a, ax, ay, wx, wy)) continue;
-            if (!point_in_instance(b, b->x, b->y, wx, wy)) continue;
+            if (!mask_ctx_test(p.ctx, wx, wy)) continue;
+            if (!mask_ctx_test(cb, wx, wy)) continue;
             return true;
         }
     }
     return false;
+}
+
+static bool instances_hit(Instance* a, double ax, double ay, Instance* b) {
+    HitProbe p;
+    if (!probe_init(a, ax, ay, p)) return false;
+    return probe_hits(p, b);
 }
 
 bool inst_bbox(Instance* inst, double px, double py, double& l, double& t, double& r, double& b) {
@@ -540,19 +594,20 @@ static bool boxes_overlap(double al, double at, double ar, double ab,
 
 Instance* collision_at(Instance* self, double px, double py, int who, bool) {
     if (!self) return nullptr;
-    double l, t, r, b;
-    if (who >= 0 && who < 100000 && inst_bbox(self, px, py, l, t, r, b)) {
+    HitProbe p;
+    if (!probe_init(self, px, py, p)) return nullptr;
+    if (who >= 0 && who < 100000) {
         Instance* found = nullptr;
-        for_each_candidate_in_rect(l, t, r, b, [&](Instance* other) {
+        for_each_candidate_in_rect(p.l, p.t, p.r, p.b, [&](Instance* other) {
             if (found || other == self || !inst_matches(other, who)) return;
-            if (instances_hit(self, px, py, other)) found = other;
+            if (probe_hits(p, other)) found = other;
         });
         return found;
     }
     for (auto& sp : g_instances) {
         Instance* other = sp.get();
         if (other == self || !inst_matches(other, who)) continue;
-        if (instances_hit(self, px, py, other)) return other;
+        if (probe_hits(p, other)) return other;
     }
     return nullptr;
 }
@@ -1067,6 +1122,10 @@ static Value* scope_slot(Instance* self, int spec, int name) {
 }
 
 static Value builtin_array_get(Instance* self, const char* name, int idx, bool& handled) {
+    if (std::strncmp(name, "view_", 5) != 0) {
+        handled = false;
+        return Value();
+    }
     handled = true;
     if (!std::strcmp(name, "view_camera")) return Value((double)(idx >= 0 && idx < 8 ? g_view_camera[idx] : 0));
     if (!std::strcmp(name, "view_visible")) return Value((double)(idx >= 0 && idx < 8 ? g_view_visible[idx] : 0));
@@ -1084,6 +1143,7 @@ static Value builtin_array_get(Instance* self, const char* name, int idx, bool& 
 
 static bool builtin_array_set(Instance* self, const char* name, int idx, const Value& v) {
     (void)self;
+    if (std::strncmp(name, "view_", 5) != 0) return false;
     if (!std::strcmp(name, "view_camera")) {
         if (idx >= 0 && idx < 8) g_view_camera[idx] = (int)(double)v;
         return true;
@@ -1218,65 +1278,95 @@ Instance* kwik_env_pop() {
     return f.saved_self;
 }
 
+enum class BVar {
+    None, Room, RoomSpeed, RoomWidth, RoomHeight, RoomFirst, RoomLast, Fps, FpsReal,
+    CurrentTime, DeltaTime, OsType, OsBrowser, Undefined, PointerNull, All, Noone, Other,
+    Self, InstanceCount, MouseX, MouseY, WorkingDirectory, ProgramDirectory, ViewCurrent,
+    KeyboardString, GameSaveId, ArgumentCount, ViewEnabled, AsyncLoad, ApplicationSurface,
+    DebugMode, PathIndex, PathPosition, PathSpeed, PathEndaction,
+};
+
+static BVar builtin_var_id(const char* name) {
+    static const KwikStrMap<BVar> table = {
+        {"room", BVar::Room}, {"room_speed", BVar::RoomSpeed}, {"room_width", BVar::RoomWidth},
+        {"room_height", BVar::RoomHeight}, {"room_first", BVar::RoomFirst},
+        {"room_last", BVar::RoomLast}, {"fps", BVar::Fps}, {"fps_real", BVar::FpsReal},
+        {"current_time", BVar::CurrentTime}, {"delta_time", BVar::DeltaTime},
+        {"os_type", BVar::OsType}, {"os_browser", BVar::OsBrowser},
+        {"undefined", BVar::Undefined}, {"pointer_null", BVar::PointerNull}, {"all", BVar::All},
+        {"noone", BVar::Noone}, {"other", BVar::Other}, {"self", BVar::Self},
+        {"instance_count", BVar::InstanceCount}, {"mouse_x", BVar::MouseX},
+        {"mouse_y", BVar::MouseY}, {"working_directory", BVar::WorkingDirectory},
+        {"program_directory", BVar::ProgramDirectory}, {"view_current", BVar::ViewCurrent},
+        {"keyboard_string", BVar::KeyboardString}, {"game_save_id", BVar::GameSaveId},
+        {"argument_count", BVar::ArgumentCount}, {"view_enabled", BVar::ViewEnabled},
+        {"async_load", BVar::AsyncLoad}, {"application_surface", BVar::ApplicationSurface},
+        {"debug_mode", BVar::DebugMode}, {"path_index", BVar::PathIndex},
+        {"path_position", BVar::PathPosition}, {"path_speed", BVar::PathSpeed},
+        {"path_endaction", BVar::PathEndaction},
+    };
+    auto it = table.find(KWIK_STR_KEY(name));
+    return it == table.end() ? BVar::None : it->second;
+}
+
 Value kwik_builtin_get(Instance* self, const char* name) {
-    if (!std::strcmp(name, "room")) return Value((double)g_current_room);
-    if (!std::strcmp(name, "room_speed")) return Value(g_room_speed_v);
-    if (!std::strcmp(name, "room_width")) return Value((double)room_width_cur());
-    if (!std::strcmp(name, "room_height")) return Value((double)room_height_cur());
-    if (!std::strcmp(name, "room_first")) return Value(0.0);
-    if (!std::strcmp(name, "room_last")) return Value((double)(g_room_count_rt - 1));
-    if (!std::strcmp(name, "fps")) return Value(g_room_speed_v);
-    if (!std::strcmp(name, "fps_real")) return Value(1000.0);
-    if (!std::strcmp(name, "current_time")) return Value(now_ms());
-    if (!std::strcmp(name, "delta_time")) return Value(1000000.0 / g_room_speed_v);
-    if (!std::strcmp(name, "os_type")) return Value(0.0);
-    if (!std::strcmp(name, "os_browser")) return Value(-1.0);
-    if (!std::strcmp(name, "undefined")) return Value();
-    if (!std::strcmp(name, "pointer_null")) return Value();
-    if (!std::strcmp(name, "all")) return Value(-3.0);
-    if (!std::strcmp(name, "noone")) return Value(-4.0);
-    if (!std::strcmp(name, "other")) return kwik_other(self);
-    if (!std::strcmp(name, "self")) return kwik_this(self);
-    if (!std::strcmp(name, "instance_count")) {
-        int n = 0;
-        for (auto& sp : g_instances)
-            if (!sp->dead && sp->active) ++n;
-        return Value((double)n);
-    }
-    if (!std::strcmp(name, "mouse_x")) {
-        Camera& c = g_cameras[g_view_camera[0]];
-        return Value(c.x + render_mouse_x() * c.w / std::max(1, render_gui_width()));
-    }
-    if (!std::strcmp(name, "mouse_y")) {
-        Camera& c = g_cameras[g_view_camera[0]];
-        return Value(c.y + render_mouse_y() * c.h / std::max(1, render_gui_height()));
-    }
-    if (!std::strcmp(name, "working_directory")) return Value(g_game_dir + "/");
-    if (!std::strcmp(name, "program_directory")) return Value(g_game_dir + "/");
-    if (!std::strcmp(name, "view_current")) return Value(0.0);
-    if (!std::strcmp(name, "keyboard_string")) return Value("");
-    if (!std::strcmp(name, "game_save_id"))
-        return Value(g_save_dir.empty() ? g_game_dir + "/" : g_save_dir + "/");
-    if (!std::strcmp(name, "argument_count")) return Value(0.0);
-    if (!std::strcmp(name, "view_enabled")) return Value(1.0);
-    if (!std::strcmp(name, "async_load")) return Value((double)g_async_load_map);
-    if (!std::strcmp(name, "application_surface")) return Value(0.0);
-    if (!std::strcmp(name, "debug_mode")) return global_var("debug");
-    if (!std::strcmp(name, "path_index")) {
-        if (self && self->has("__kwik_path")) return self->var("__kwik_path");
-        return Value(-1.0);
-    }
-    if (!std::strcmp(name, "path_position")) {
-        if (self && self->has("path_position")) return self->var("path_position");
-        return Value(0.0);
-    }
-    if (!std::strcmp(name, "path_speed")) {
-        if (self && self->has("path_speed")) return self->var("path_speed");
-        return Value(0.0);
-    }
-    if (!std::strcmp(name, "path_endaction")) {
-        if (self && self->has("__kwik_path_end")) return self->var("__kwik_path_end");
-        return Value(0.0);
+    switch (builtin_var_id(name)) {
+        case BVar::Room: return Value((double)g_current_room);
+        case BVar::RoomSpeed: return Value(g_room_speed_v);
+        case BVar::RoomWidth: return Value((double)room_width_cur());
+        case BVar::RoomHeight: return Value((double)room_height_cur());
+        case BVar::RoomFirst: return Value(0.0);
+        case BVar::RoomLast: return Value((double)(g_room_count_rt - 1));
+        case BVar::Fps: return Value(g_room_speed_v);
+        case BVar::FpsReal: return Value(1000.0);
+        case BVar::CurrentTime: return Value(now_ms());
+        case BVar::DeltaTime: return Value(1000000.0 / g_room_speed_v);
+        case BVar::OsType: return Value(0.0);
+        case BVar::OsBrowser: return Value(-1.0);
+        case BVar::Undefined: return Value();
+        case BVar::PointerNull: return Value();
+        case BVar::All: return Value(-3.0);
+        case BVar::Noone: return Value(-4.0);
+        case BVar::Other: return kwik_other(self);
+        case BVar::Self: return kwik_this(self);
+        case BVar::InstanceCount: {
+            int n = 0;
+            for (auto& sp : g_instances)
+                if (!sp->dead && sp->active) ++n;
+            return Value((double)n);
+        }
+        case BVar::MouseX: {
+            Camera& c = g_cameras[g_view_camera[0]];
+            return Value(c.x + render_mouse_x() * c.w / std::max(1, render_gui_width()));
+        }
+        case BVar::MouseY: {
+            Camera& c = g_cameras[g_view_camera[0]];
+            return Value(c.y + render_mouse_y() * c.h / std::max(1, render_gui_height()));
+        }
+        case BVar::WorkingDirectory: return Value(g_game_dir + "/");
+        case BVar::ProgramDirectory: return Value(g_game_dir + "/");
+        case BVar::ViewCurrent: return Value(0.0);
+        case BVar::KeyboardString: return Value("");
+        case BVar::GameSaveId:
+            return Value(g_save_dir.empty() ? g_game_dir + "/" : g_save_dir + "/");
+        case BVar::ArgumentCount: return Value(0.0);
+        case BVar::ViewEnabled: return Value(1.0);
+        case BVar::AsyncLoad: return Value((double)g_async_load_map);
+        case BVar::ApplicationSurface: return Value(0.0);
+        case BVar::DebugMode: return global_var("debug");
+        case BVar::PathIndex:
+            if (self && self->has("__kwik_path")) return self->var("__kwik_path");
+            return Value(-1.0);
+        case BVar::PathPosition:
+            if (self && self->has("path_position")) return self->var("path_position");
+            return Value(0.0);
+        case BVar::PathSpeed:
+            if (self && self->has("path_speed")) return self->var("path_speed");
+            return Value(0.0);
+        case BVar::PathEndaction:
+            if (self && self->has("__kwik_path_end")) return self->var("__kwik_path_end");
+            return Value(0.0);
+        case BVar::None: break;
     }
     if (self) {
         bool handled;
@@ -1291,23 +1381,28 @@ Value kwik_builtin_get(Instance* self, const char* name) {
 }
 
 void kwik_builtin_set(Instance* self, const char* name, const Value& v) {
-    if (!std::strcmp(name, "room_speed")) { g_room_speed_v = (double)v; return; }
-    if (!std::strcmp(name, "room")) { kwik_room_goto((int)(double)v); return; }
-    if (!std::strcmp(name, "keyboard_string")) return;
-    if (!std::strcmp(name, "debug_mode")) { global_var("debug") = v; return; }
-    if (self && !std::strcmp(name, "path_index")) {
-        int pth = (int)(double)v;
-        if (pth < 0) {
-            self->vars.erase(kwik_intern_varname("__kwik_path"));
-        } else {
-            self->var("__kwik_path") = Value((double)pth);
-            if (!self->has("path_position")) self->var("path_position") = Value(0.0);
-            if (!self->has("path_speed")) self->var("path_speed") = Value(4.0);
-            if (!self->has("__kwik_path_end")) self->var("__kwik_path_end") = Value(0.0);
-            self->var("__kwik_path_ox") = Value(0.0);
-            self->var("__kwik_path_oy") = Value(0.0);
-        }
-        return;
+    switch (builtin_var_id(name)) {
+        case BVar::RoomSpeed: g_room_speed_v = (double)v; return;
+        case BVar::Room: kwik_room_goto((int)(double)v); return;
+        case BVar::KeyboardString: return;
+        case BVar::DebugMode: global_var("debug") = v; return;
+        case BVar::PathIndex:
+            if (self) {
+                int pth = (int)(double)v;
+                if (pth < 0) {
+                    self->vars.erase(kwik_intern_varname("__kwik_path"));
+                } else {
+                    self->var("__kwik_path") = Value((double)pth);
+                    if (!self->has("path_position")) self->var("path_position") = Value(0.0);
+                    if (!self->has("path_speed")) self->var("path_speed") = Value(4.0);
+                    if (!self->has("__kwik_path_end")) self->var("__kwik_path_end") = Value(0.0);
+                    self->var("__kwik_path_ox") = Value(0.0);
+                    self->var("__kwik_path_oy") = Value(0.0);
+                }
+                return;
+            }
+            break;
+        default: break;
     }
     if (self) inst_set_raw(self, kwik_intern_varname(name), v);
 }
@@ -2658,6 +2753,9 @@ static void run_collisions() {
         int obj = a->object_index;
         int guard = 0;
         handled.clear();
+        HitProbe pa;
+        bool pa_ok = probe_init(a, a->x, a->y, pa);
+        if (!pa_ok) continue;
         while (obj >= 0 && obj < g_object_count_rt && guard++ < 128) {
             const ObjectDef& od = g_objects_rt[obj];
             for (int c = 0; c < od.collision_count; ++c) {
@@ -2669,17 +2767,19 @@ static void run_collisions() {
                 for (size_t bi = 0; bi < m; ++bi) {
                     Instance* b = g_instances[bi].get();
                     if (b == a || !inst_matches(b, target)) continue;
-                    if (instances_hit(a, a->x, a->y, b)) {
+                    if (probe_hits(pa, b)) {
                         Instance* saved_other = g_other_ptr;
                         g_other_ptr = b;
                         call_event(a, EVK_STEP, 0, fn, obj);
                         g_other_ptr = saved_other;
                         if (a->dead) break;
+                        pa_ok = probe_init(a, a->x, a->y, pa);
+                        if (!pa_ok) break;
                     }
                 }
-                if (a->dead) break;
+                if (a->dead || !pa_ok) break;
             }
-            if (a->dead) break;
+            if (a->dead || !pa_ok) break;
             obj = od.parent_index;
         }
     }
@@ -2873,18 +2973,23 @@ static void load_room(int index, bool clear_persistent) {
     sweep_dead();
 }
 
-void kwik_render_tilemap(const RtLayer& tm, double ox, double oy) {
+void kwik_render_tilemap_clipped(const RtLayer& tm, double ox, double oy, double cx0, double cy0,
+                                 double cx1, double cy1) {
     if (tm.tileset < 0 || tm.tileset >= g_tileset_count) return;
     const KwikTileset& ts = g_tilesets[tm.tileset];
-    if (ts.image < 0 || ts.columns <= 0) return;
+    if (ts.image < 0 || ts.columns <= 0 || ts.tile_w <= 0 || ts.tile_h <= 0) return;
     const uint32_t* grid = kwik_tilemap_grid(tm.grid_blob, tm.grid_w * tm.grid_h);
     if (!grid) return;
     int strideX = ts.tile_w + 2 * ts.border_x;
     int strideY = ts.tile_h + 2 * ts.border_y;
     double bla = (((tm.color >> 24) & 0xFF) / 255.0) * tm.alpha;
     unsigned int bblend = tm.color & 0xFFFFFF;
-    for (int gy = 0; gy < tm.grid_h; ++gy) {
-        for (int gx = 0; gx < tm.grid_w; ++gx) {
+    int gx0 = std::max(0, (int)std::floor((cx0 - ox) / ts.tile_w));
+    int gx1 = std::min(tm.grid_w, (int)std::ceil((cx1 - ox) / ts.tile_w));
+    int gy0 = std::max(0, (int)std::floor((cy0 - oy) / ts.tile_h));
+    int gy1 = std::min(tm.grid_h, (int)std::ceil((cy1 - oy) / ts.tile_h));
+    for (int gy = gy0; gy < gy1; ++gy) {
+        for (int gx = gx0; gx < gx1; ++gx) {
             uint32_t cell = grid[gy * tm.grid_w + gx];
             uint32_t idx = cell & 0x0007FFFF;
             if (idx == 0) continue;
@@ -2912,6 +3017,10 @@ void kwik_render_tilemap(const RtLayer& tm, double ox, double oy) {
     }
 }
 
+void kwik_render_tilemap(const RtLayer& tm, double ox, double oy) {
+    kwik_render_tilemap_clipped(tm, ox, oy, -1e30, -1e30, 1e30, 1e30);
+}
+
 static void draw_world() {
     Camera& cam = g_cameras[g_view_camera[0]];
     render_set_view(cam.x, cam.y, cam.w, cam.h);
@@ -2926,7 +3035,8 @@ static void draw_world() {
         double tile_ox, tile_oy;
         bool tilemap;
     };
-    std::vector<DrawItem> items;
+    static std::vector<DrawItem> items;
+    items.clear();
     const RoomDef* cur = g_current_room >= 0 ? &g_room_defs_rt[g_current_room] : nullptr;
     for (const RtLayer& l : g_rt_layers) {
         if (!l.visible) continue;
@@ -2970,7 +3080,8 @@ static void draw_world() {
     for (const DrawItem& it : items) {
         if (it.tilemap) {
             const RtLayer& tm = *it.layer;
-            kwik_render_tilemap(tm, tm.x, tm.y);
+            kwik_render_tilemap_clipped(tm, tm.x, tm.y, cam.x, cam.y, cam.x + cam.w,
+                                        cam.y + cam.h);
             continue;
         }
         if (it.layer) {
@@ -3055,7 +3166,8 @@ static void draw_world() {
 
     render_begin_gui();
     for (int kind : {EVK_DRAW_GUI_BEGIN, EVK_DRAW_GUI, EVK_DRAW_GUI_END}) {
-        std::vector<DrawItem> gitems;
+        static std::vector<DrawItem> gitems;
+        gitems.clear();
         for (auto& sp : g_instances) {
             Instance* inst = sp.get();
             if (inst->dead || !inst->active || !inst->visible) continue;
@@ -3502,9 +3614,14 @@ restart_game:
         if (accumulator > 0.2) accumulator = 0.2;
         step_time = 1.0 / std::max(1.0, g_room_speed_v);
 
+#if defined(__vita__) || defined(__3DS__)
+        const int max_catchup = 2;
+#else
+        const int max_catchup = 4;
+#endif
         int guard = 0;
         bool stepped = false;
-        while (accumulator >= step_time && guard++ < 4) {
+        while (accumulator >= step_time && guard++ < max_catchup) {
             accumulator -= step_time;
             run_step_phase();
             stepped = true;
