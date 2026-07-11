@@ -26,36 +26,38 @@ struct LoadedImage {
     bool ok = false;
 };
 
-static std::vector<uint8_t> g_assets;
+static std::FILE* g_assets_file = nullptr;
+static size_t g_assets_size = 0;
 static bool g_assets_tried = false;
 static std::vector<LoadedImage> g_images;
 
+static bool read_range(size_t o, size_t len, void* out) {
+    if (!g_assets_file || o + len > g_assets_size) return false;
+    if (std::fseek(g_assets_file, (long)o, SEEK_SET) != 0) return false;
+    return std::fread(out, 1, len, g_assets_file) == len;
+}
+
 static uint32_t rd32(size_t o) {
-    if (o + 4 > g_assets.size()) return 0;
-    return g_assets[o] | (g_assets[o + 1] << 8) | (g_assets[o + 2] << 16) |
-           ((uint32_t)g_assets[o + 3] << 24);
+    unsigned char b[4];
+    if (!read_range(o, 4, b)) return 0;
+    return b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
 }
 
 static uint16_t rd16(size_t o) {
-    if (o + 2 > g_assets.size()) return 0;
-    return (uint16_t)(g_assets[o] | (g_assets[o + 1] << 8));
+    unsigned char b[2];
+    if (!read_range(o, 2, b)) return 0;
+    return (uint16_t)(b[0] | (b[1] << 8));
 }
 
 static void ensure_assets() {
     if (g_assets_tried) return;
     g_assets_tried = true;
     const char* path = g_assets_path.empty() ? "Assets.dat" : g_assets_path.c_str();
-    std::FILE* f = std::fopen(path, "rb");
-    if (f) {
-        std::fseek(f, 0, SEEK_END);
-        long n = std::ftell(f);
-        std::fseek(f, 0, SEEK_SET);
-        if (n > 0) {
-            g_assets.resize(n);
-            size_t got = std::fread(g_assets.data(), 1, n, f);
-            g_assets.resize(got);
-        }
-        std::fclose(f);
+    g_assets_file = std::fopen(path, "rb");
+    if (g_assets_file) {
+        std::fseek(g_assets_file, 0, SEEK_END);
+        long n = std::ftell(g_assets_file);
+        g_assets_size = n > 0 ? (size_t)n : 0;
     } else {
         std::fprintf(stderr, "[kwik] could not open %s\n", path);
     }
@@ -68,12 +70,15 @@ const unsigned char* kwik_sound_blob(int blob_index, unsigned int& size, int& ty
     type = 0;
     if (blob_index < 0) return nullptr;
     size_t off = rd32((size_t)g_image_count * 2 + (size_t)(g_image_count + blob_index) * 4);
-    if (off == 0 || off + 8 > g_assets.size()) return nullptr;
+    if (off == 0 || off + 8 > g_assets_size) return nullptr;
     type = (int)rd32(off);
     uint32_t sz = rd32(off + 4);
-    if (off + 8 + sz > g_assets.size()) return nullptr;
+    if (off + 8 + sz > g_assets_size) return nullptr;
+    static std::vector<unsigned char> scratch;
+    scratch.resize(sz);
+    if (sz && !read_range(off + 8, sz, scratch.data())) return nullptr;
     size = sz;
-    return &g_assets[off + 8];
+    return scratch.data();
 }
 
 static std::vector<KwikSprite> g_dyn_sprites;
@@ -221,6 +226,20 @@ int kwik_sprite_frame_image(int spr, int sub) {
     const KwikSprite* s = kwik_sprite_at(spr);
     if (!s || s->frame_count <= 0) return -1;
     return s->first_frame + ((sub % s->frame_count) + s->frame_count) % s->frame_count;
+}
+
+void kwik_flush_textures() {
+    int n = std::min((int)g_images.size(), g_image_count);
+    for (int i = 0; i < n; ++i) {
+        LoadedImage& img = g_images[i];
+        if (!img.tried) continue;
+        if (img.ok && img.tex) render_free_texture(img.tex);
+        img.tex = 0;
+        img.w = 0;
+        img.h = 0;
+        img.ok = false;
+        img.tried = false;
+    }
 }
 
 unsigned int kwik_image_texture(int image, int& w, int& h) {

@@ -774,6 +774,23 @@ static C3D_Tex* white_c3dtex() {
     return t ? &t->tex : nullptr;
 }
 
+void render_free_texture(unsigned int tex) {
+    if (!tex) return;
+    for (size_t i = 0; i < g_evictable.size(); ++i)
+        if (g_evictable[i].tex_id == tex) {
+            g_evictable.erase(g_evictable.begin() + i);
+            break;
+        }
+    RtTexture* t = tex_of(tex);
+    if (!t) return;
+    if (t->rt) {
+        C3D_RenderTargetDelete(t->rt);
+        t->rt = nullptr;
+    }
+    C3D_TexDelete(&t->tex);
+    t->alive = false;
+}
+
 unsigned int render_texture_from_surface(int id, int x, int y, int w, int h) {
     unsigned int src_tid = id == 0 ? g_app_tex : render_surface_texture(id);
     RtTexture* src = tex_of(src_tid);
