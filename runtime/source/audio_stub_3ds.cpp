@@ -366,7 +366,16 @@ static Voice* start_voice(int what, bool loop) {
             unsigned int size = 0;
             int type = 0;
             const unsigned char* data = kwik_sound_blob(s.blob, size, type);
-            if (data && size) v = start_sfx_voice(data, size, type, vol, pitch, loop);
+            if (data && size) {
+                bool big_ogg = size > 512 * 1024 &&
+                               (type == 2 || (size >= 4 && !std::memcmp(data, "OggS", 4)));
+                if (big_ogg) {
+                    std::vector<unsigned char> bytes(data, data + size);
+                    v = start_stream_voice(std::move(bytes), vol, pitch, loop);
+                } else {
+                    v = start_sfx_voice(data, size, type, vol, pitch, loop);
+                }
+            }
         } else if (s.file && *s.file) {
             std::vector<unsigned char> bytes;
             std::string fn = s.file;

@@ -75,6 +75,8 @@ const unsigned char* kwik_sound_blob(int blob_index, unsigned int& size, int& ty
     uint32_t sz = rd32(off + 4);
     if (off + 8 + sz > g_assets_size) return nullptr;
     static std::vector<unsigned char> scratch;
+    if (scratch.capacity() > (1u << 20) && sz * 2 < scratch.capacity())
+        std::vector<unsigned char>().swap(scratch);
     scratch.resize(sz);
     if (sz && !read_range(off + 8, sz, scratch.data())) return nullptr;
     size = sz;
@@ -161,22 +163,27 @@ static LoadedImage& load_image(int index) {
     }
 
     size_t off = rd32((size_t)g_image_count * 2 + (size_t)index * 4);
-    if (off == 0 || off + 16 > g_assets.size()) { img.tried = true; return img; }
+    if (off == 0 || off + 16 > g_assets_size) { img.tried = true; return img; }
     uint16_t format = rd16(off + 8);
     uint32_t payload_size = rd32(off + 12);
-    if (off + 16 + payload_size > g_assets.size()) { img.tried = true; return img; }
+    if (off + 16 + payload_size > g_assets_size) { img.tried = true; return img; }
+    std::vector<unsigned char> payload(payload_size);
+    if (payload_size && !read_range(off + 16, payload_size, payload.data())) {
+        img.tried = true;
+        return img;
+    }
 
     unsigned int tex = 0;
     int w = 0, h = 0;
     if (format == 1) {
-        tex = render_upload_texture_t3x(&g_assets[off + 16], payload_size);
+        tex = render_upload_texture_t3x(payload.data(), payload_size);
         if (tex == 0) return img;
         w = rd16(off);
         h = rd16(off + 2);
     } else {
         int ch;
         unsigned char* pixels =
-            stbi_load_from_memory(&g_assets[off + 16], payload_size, &w, &h, &ch, 4);
+            stbi_load_from_memory(payload.data(), (int)payload_size, &w, &h, &ch, 4);
         if (!pixels) { img.tried = true; return img; }
         tex = render_upload_texture(pixels, w, h);
         stbi_image_free(pixels);
@@ -191,11 +198,16 @@ static LoadedImage& load_image(int index) {
     return img;
 }
 
-const MaskSet* kwik_sprite_masks(int spr) {
-    static std::unordered_map<int, MaskSet> cache;
-    auto it = cache.find(spr);
-    if (it != cache.end()) return it->second.count > 0 ? &it->second : nullptr;
+struct CachedMask {
     MaskSet ms;
+    std::vector<unsigned char> bytes;
+};
+
+const MaskSet* kwik_sprite_masks(int spr) {
+    static std::unordered_map<int, CachedMask> cache;
+    auto it = cache.find(spr);
+    if (it != cache.end()) return it->second.ms.count > 0 ? &it->second.ms : nullptr;
+    CachedMask& slot = cache[spr];
     const KwikSprite* s = kwik_sprite_at(spr);
     if (s && s->sep_masks == 1 && s->mask_blob >= 0) {
         unsigned int size = 0;
@@ -206,20 +218,20 @@ const MaskSet* kwik_sprite_masks(int spr) {
                 return (unsigned)d[o] | ((unsigned)d[o + 1] << 8) | ((unsigned)d[o + 2] << 16) |
                        ((unsigned)d[o + 3] << 24);
             };
+            MaskSet ms;
             ms.count = (int)r32(0);
             ms.w = (int)r32(4);
             ms.h = (int)r32(8);
             ms.rowbytes = (ms.w + 7) / 8;
-            if (ms.count > 0 && ms.w > 0 && ms.h > 0 &&
-                12 + (size_t)ms.count * ms.rowbytes * ms.h <= size)
-                ms.data = d + 12;
-            else
-                ms.count = 0;
+            size_t mask_bytes = (size_t)ms.count * ms.rowbytes * ms.h;
+            if (ms.count > 0 && ms.w > 0 && ms.h > 0 && 12 + mask_bytes <= size) {
+                slot.bytes.assign(d + 12, d + 12 + mask_bytes);
+                ms.data = slot.bytes.data();
+                slot.ms = ms;
+            }
         }
     }
-    auto& slot = cache[spr];
-    slot = ms;
-    return slot.count > 0 ? &slot : nullptr;
+    return slot.ms.count > 0 ? &slot.ms : nullptr;
 }
 
 int kwik_sprite_frame_image(int spr, int sub) {
