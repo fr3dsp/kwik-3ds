@@ -147,6 +147,9 @@ void render_touch_texture(unsigned int tex_id) {
         }
 }
 
+static void flush_quad_batch();
+static void set_blend_state(int src, int dst, int asrc, int adst);
+
 static bool evict_oldest_texture() {
     size_t oldest = (size_t)-1;
     for (size_t i = 0; i < g_evictable.size(); ++i) {
@@ -159,6 +162,7 @@ static bool evict_oldest_texture() {
     g_evictable.erase(g_evictable.begin() + oldest);
     RtTexture* t = tex_of(e.tex_id);
     if (t) {
+        flush_quad_batch();
         if (t->rt) { C3D_RenderTargetDelete(t->rt); t->rt = nullptr; }
         C3D_TexDelete(&t->tex);
         t->alive = false;
@@ -302,6 +306,28 @@ static void submit(const Vtx* verts, int nverts, const u16* idx, int nidx, C3D_T
     }
 }
 
+static std::vector<Vtx> g_qbatch;
+static std::vector<u16> g_qbatch_idx;
+static C3D_Tex* g_qbatch_tex = nullptr;
+
+static void flush_quad_batch() {
+    if (g_qbatch.empty()) return;
+    submit(g_qbatch.data(), (int)g_qbatch.size(), g_qbatch_idx.data(), (int)g_qbatch_idx.size(),
+           g_qbatch_tex);
+    g_qbatch.clear();
+    g_qbatch_idx.clear();
+}
+
+static void batch_quad(C3D_Tex* tex, const Vtx* v) {
+    if (!g_qbatch.empty() && (tex != g_qbatch_tex || g_qbatch.size() >= 2048)) flush_quad_batch();
+    g_qbatch_tex = tex;
+    u16 base = (u16)g_qbatch.size();
+    g_qbatch.insert(g_qbatch.end(), v, v + 4);
+    const u16 idx[6] = {base,          (u16)(base + 1), (u16)(base + 2),
+                        base,          (u16)(base + 2), (u16)(base + 3)};
+    g_qbatch_idx.insert(g_qbatch_idx.end(), idx, idx + 6);
+}
+
 static u8 vcol_component(unsigned int bgr, int shift) { return (u8)((bgr >> shift) & 0xFF); }
 
 static void vcol(unsigned int bgr, double alpha, u8& r, u8& g, u8& b, u8& a) {
@@ -412,6 +438,7 @@ void render_surface_free(int id) {
     if (!sf) return;
     RtTexture* t = tex_of(sf->tex_id);
     if (t) {
+        flush_quad_batch();
         if (t->rt) C3D_RenderTargetDelete(t->rt);
         C3D_TexDelete(&t->tex);
         t->alive = false;
@@ -448,6 +475,7 @@ static void set_surface_ortho(int w, int h) {
 }
 
 bool render_surface_set_target(int id) {
+    flush_quad_batch();
     RtSurface* sf = surf_of(id);
     unsigned int tid = id == 0 ? g_app_tex : (sf ? sf->tex_id : 0);
     RtTexture* t = tex_of(tid);
@@ -461,6 +489,7 @@ bool render_surface_set_target(int id) {
 }
 
 void render_surface_reset_target() {
+    flush_quad_batch();
     if (g_target_stack.empty()) return;
     g_target_stack.pop_back();
     if (!g_xf_stack.empty()) {
@@ -508,6 +537,7 @@ bool render_surface_getpixel(int id, int x, int y, unsigned char* rgba_out) {
 }
 
 void render_surface_clear(unsigned int bgr, double alpha) {
+    flush_quad_batch();
     int cur = g_target_stack.empty() ? 0 : g_target_stack.back();
     unsigned int tid = cur == 0 ? g_app_tex : render_surface_texture(cur);
     RtTexture* t = tex_of(tid);
@@ -666,8 +696,7 @@ static void draw_tex_quad(RtTexture* t, const float* xs, const float* ys, float 
         v[i].b = b;
         v[i].a = a;
     }
-    const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-    submit(v, 4, idx, 6, &t->tex);
+    batch_quad(&t->tex, v);
 }
 
 void render_draw_quad(unsigned int tex, double x, double y, double dw, double dh, double origin_x,
@@ -721,14 +750,6 @@ void render_draw_glyphs_colored(unsigned int tex, const GlyphQuad* quads, int co
     if (t->rt) C3D_TexFlush(&t->tex);
     u8 r, g, b, a;
     vcol(bgr, alpha, r, g, b, a);
-    const int kMaxQuads = 128;
-    Vtx verts[kMaxQuads * 4];
-    u16 idx[kMaxQuads * 6];
-    int n = 0;
-    auto flush = [&]() {
-        if (n > 0) submit(verts, n * 4, idx, n * 6, &t->tex);
-        n = 0;
-    };
     for (int i = 0; i < count; ++i) {
         const GlyphQuad& q = quads[i];
         float u0 = q.u0, v0 = q.v0, u1 = q.u1, v1 = q.v1;
@@ -744,19 +765,14 @@ void render_draw_glyphs_colored(unsigned int tex, const GlyphQuad* quads, int co
             v1 = 1.0f - v1 * sv;
         }
         float x0 = tx(q.x), y0 = ty(q.y), x1 = tx(q.x + q.w), y1 = ty(q.y + q.h);
-        Vtx* v = &verts[n * 4];
-        v[0] = {x0, y0, u0, v0, r, g, b, a};
-        v[1] = {x1, y0, u1, v0, r, g, b, a};
-        v[2] = {x1, y1, u1, v1, r, g, b, a};
-        v[3] = {x0, y1, u0, v1, r, g, b, a};
-        u16* ix = &idx[n * 6];
-        u16 base = (u16)(n * 4);
-        ix[0] = base; ix[1] = (u16)(base + 1); ix[2] = (u16)(base + 2);
-        ix[3] = base; ix[4] = (u16)(base + 2); ix[5] = (u16)(base + 3);
-        ++n;
-        if (n >= kMaxQuads) flush();
+        Vtx v[4] = {
+            {x0, y0, u0, v0, r, g, b, a},
+            {x1, y0, u1, v0, r, g, b, a},
+            {x1, y1, u1, v1, r, g, b, a},
+            {x0, y1, u0, v1, r, g, b, a},
+        };
+        batch_quad(&t->tex, v);
     }
-    flush();
 }
 
 void render_draw_glyph(unsigned int tex, double dx, double dy, double dw, double dh, float u0,
@@ -781,6 +797,7 @@ static C3D_Tex* white_c3dtex() {
 
 void render_free_texture(unsigned int tex) {
     if (!tex) return;
+    flush_quad_batch();
     for (size_t i = 0; i < g_evictable.size(); ++i)
         if (g_evictable[i].tex_id == tex) {
             g_evictable.erase(g_evictable.begin() + i);
@@ -811,6 +828,7 @@ unsigned int render_texture_from_surface(int id, int x, int y, int w, int h) {
         return 0;
     }
 
+    flush_quad_batch();
     C3D_RenderTargetClear(dst->rt, C3D_CLEAR_COLOR, 0, 0);
     bool own_frame = !g_in_frame;
     if (own_frame) C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
@@ -831,7 +849,7 @@ unsigned int render_texture_from_surface(int id, int x, int y, int w, int h) {
     bool sfog = g_fog_on;
 
     set_surface_ortho(dst->w, dst->h);
-    g_blend_src = 2; g_blend_dst = 1; g_blend_asrc = 2; g_blend_adst = 1;
+    set_blend_state(2, 1, 2, 1);
     g_colormask[0] = g_colormask[1] = g_colormask[2] = g_colormask[3] = true;
     g_fog_on = false;
 
@@ -844,13 +862,12 @@ unsigned int render_texture_from_surface(int id, int x, int y, int w, int h) {
     draw_tex_quad(src, vx, vy, u0, v0, u1, v1, 0xFFFFFF, 1.0);
 
     if (id == 0) {
-        g_blend_src = 1; g_blend_dst = 2;
-        g_blend_asrc = 2; g_blend_adst = 1;
+        set_blend_state(1, 2, 2, 1);
         Vtx v[4] = {mkv(0, 0, 0xFFFFFF, 1.0), mkv(dst->w, 0, 0xFFFFFF, 1.0),
                     mkv(dst->w, dst->h, 0xFFFFFF, 1.0), mkv(0, dst->h, 0xFFFFFF, 1.0)};
-        const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-        submit(v, 4, idx, 6, white_c3dtex());
+        batch_quad(white_c3dtex(), v);
     }
+    flush_quad_batch();
 
     g_blend_src = sbs; g_blend_dst = sbd; g_blend_asrc = sbas; g_blend_adst = sbad;
     g_colormask[0] = scm[0]; g_colormask[1] = scm[1]; g_colormask[2] = scm[2]; g_colormask[3] = scm[3];
@@ -899,14 +916,12 @@ void render_draw_rectangle_color(double x1, double y1, double x2, double y2, uns
     if (is_fade) {
         Vtx v[4] = {mkv(x1, y1, 0xFF00FF, 1.0), mkv(x2 + 1, y1, 0xFF00FF, 1.0),
                    mkv(x2 + 1, y2 + 1, 0xFF00FF, 1.0), mkv(x1, y2 + 1, 0xFF00FF, 1.0)};
-        const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-        submit(v, 4, idx, 6, white_c3dtex());
+        batch_quad(white_c3dtex(), v);
         return;
     }
     Vtx v[4] = {mkv(x1, y1, c1, g_alpha), mkv(x2 + 1, y1, c2, g_alpha),
                mkv(x2 + 1, y2 + 1, c3, g_alpha), mkv(x1, y2 + 1, c4, g_alpha)};
-    const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-    submit(v, 4, idx, 6, white_c3dtex());
+    batch_quad(white_c3dtex(), v);
 }
 
 void render_draw_rectangle(double x1, double y1, double x2, double y2, bool outline) {
@@ -923,8 +938,7 @@ void render_draw_line(double x1, double y1, double x2, double y2, double width, 
     double nx = -dy / len * w * 0.5, ny = dx / len * w * 0.5;
     Vtx v[4] = {mkv(x1 + nx, y1 + ny, c1, g_alpha), mkv(x1 - nx, y1 - ny, c1, g_alpha),
                mkv(x2 - nx, y2 - ny, c2, g_alpha), mkv(x2 + nx, y2 + ny, c2, g_alpha)};
-    const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-    submit(v, 4, idx, 6, white_c3dtex());
+    batch_quad(white_c3dtex(), v);
 }
 
 void render_draw_ellipse(double x1, double y1, double x2, double y2, unsigned int c1,
@@ -953,6 +967,7 @@ void render_draw_ellipse(double x1, double y1, double x2, double y2, unsigned in
         idx.push_back((u16)i);
         idx.push_back((u16)(i + 1));
     }
+    flush_quad_batch();
     submit(v.data(), (int)v.size(), idx.data(), (int)idx.size(), white_c3dtex());
 }
 
@@ -966,6 +981,7 @@ void render_draw_triangle(double x1, double y1, double x2, double y2, double x3,
     }
     Vtx v[3] = {mkv(x1, y1, c1, g_alpha), mkv(x2, y2, c2, g_alpha), mkv(x3, y3, c3, g_alpha)};
     const u16 idx[3] = {0, 1, 2};
+    flush_quad_batch();
     submit(v, 3, idx, 3, white_c3dtex());
 }
 
@@ -973,8 +989,7 @@ void render_draw_point(double x, double y, unsigned int c) {
     double sx = std::max(1e-6, g_xf.sx), sy = std::max(1e-6, g_xf.sy);
     Vtx v[4] = {mkv(x, y, c, g_alpha), mkv(x + 1.0 / sx, y, c, g_alpha),
                mkv(x + 1.0 / sx, y + 1.0 / sy, c, g_alpha), mkv(x, y + 1.0 / sy, c, g_alpha)};
-    const u16 idx[6] = {0, 1, 2, 0, 2, 3};
-    submit(v, 4, idx, 6, white_c3dtex());
+    batch_quad(white_c3dtex(), v);
 }
 
 struct PrimVert {
@@ -1007,6 +1022,7 @@ void render_primitive_vertex(double x, double y, double u, double v, unsigned in
 void render_primitive_end() {
     int n = (int)g_prim_verts.size();
     if (n == 0) return;
+    flush_quad_batch();
     RtTexture* t = g_prim_tex ? tex_of(g_prim_tex) : nullptr;
 
     if (g_prim_kind == 1) {
@@ -1206,11 +1222,10 @@ static bool key_state(int vk) {
 static void console_frame_update() {
     g_fps_frames++;
     g_fps_accum += g_dt;
-    if (g_fps_accum >= 0.5) {
-        g_fps_disp = g_fps_frames / g_fps_accum;
-        g_fps_frames = 0;
-        g_fps_accum = 0.0;
-    }
+    if (g_fps_accum < 0.5) return;
+    g_fps_disp = g_fps_frames / g_fps_accum;
+    g_fps_frames = 0;
+    g_fps_accum = 0.0;
     consoleSelect(&g_bottom_console);
     printf("\x1b[0;0Hkwik debug console      ");
     printf("\x1b[1;0Hfps: %5.1f  frame: %5.2fms   ", g_fps_disp, g_dt * 1000.0);
@@ -1337,6 +1352,8 @@ void render_begin_frame() {
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     g_in_frame = true;
     g_draws_since_split = 0;
+    g_qbatch.clear();
+    g_qbatch_idx.clear();
     g_frame_arena_offset = 0;
     g_target_stack.clear();
     g_xf_stack.clear();
@@ -1352,6 +1369,7 @@ void render_begin_frame() {
 }
 
 void render_begin_gui() {
+    flush_quad_batch();
     g_target_stack.clear();
     g_xf_stack.clear();
     RtTexture* t = tex_of(g_app_tex);
@@ -1380,6 +1398,7 @@ double render_delta_time() { return g_dt; }
 double render_time_ms() { return time_seconds() * 1000.0; }
 
 static void blit_app_to_screen() {
+    flush_quad_batch();
     RtTexture* t = tex_of(g_app_tex);
     if (!t) return;
     C3D_FrameDrawOn(g_screen_rt);
@@ -1404,6 +1423,7 @@ static void blit_app_to_screen() {
     float vx[4] = {ox, ox + dw, ox + dw, ox};
     float vy[4] = {oy, oy, oy + dh, oy + dh};
     draw_tex_quad(t, vx, vy, 0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFF, 1.0);
+    flush_quad_batch();
     g_fog_on = save_fog;
 }
 
@@ -1524,38 +1544,44 @@ void render_set_valign(int align) { g_valign = align; }
 int render_get_halign() { return g_halign; }
 int render_get_valign() { return g_valign; }
 
-void render_set_blendmode(int mode) {
-    switch (mode) {
-        case 1:
-            g_blend_src = 5; g_blend_dst = 2; g_blend_asrc = 5; g_blend_adst = 2;
-            break;
-        case 2:
-            g_blend_src = 5; g_blend_dst = 4; g_blend_asrc = 5; g_blend_adst = 4;
-            break;
-        case 3:
-            g_blend_src = 1; g_blend_dst = 4; g_blend_asrc = 1; g_blend_adst = 4;
-            break;
-        default:
-            g_blend_src = 5; g_blend_dst = 6; g_blend_asrc = 5; g_blend_adst = 6;
-            break;
-    }
-}
-
-void render_set_blendmode_ext(int src, int dst) {
-    g_blend_src = src;
-    g_blend_dst = dst;
-    g_blend_asrc = src;
-    g_blend_adst = dst;
-}
-
-void render_set_blendmode_sepalpha(int src, int dst, int asrc, int adst) {
+static void set_blend_state(int src, int dst, int asrc, int adst) {
+    if (src == g_blend_src && dst == g_blend_dst && asrc == g_blend_asrc && adst == g_blend_adst)
+        return;
+    flush_quad_batch();
     g_blend_src = src;
     g_blend_dst = dst;
     g_blend_asrc = asrc;
     g_blend_adst = adst;
 }
 
+void render_set_blendmode(int mode) {
+    switch (mode) {
+        case 1:
+            set_blend_state(5, 2, 5, 2);
+            break;
+        case 2:
+            set_blend_state(5, 4, 5, 4);
+            break;
+        case 3:
+            set_blend_state(1, 4, 1, 4);
+            break;
+        default:
+            set_blend_state(5, 6, 5, 6);
+            break;
+    }
+}
+
+void render_set_blendmode_ext(int src, int dst) {
+    set_blend_state(src, dst, src, dst);
+}
+
+void render_set_blendmode_sepalpha(int src, int dst, int asrc, int adst) {
+    set_blend_state(src, dst, asrc, adst);
+}
+
 void render_set_colorwrite(bool r, bool g, bool b, bool a) {
+    if (r != g_colormask[0] || g != g_colormask[1] || b != g_colormask[2] || a != g_colormask[3])
+        flush_quad_batch();
     g_colormask[0] = r;
     g_colormask[1] = g;
     g_colormask[2] = b;
@@ -1564,8 +1590,6 @@ void render_set_colorwrite(bool r, bool g, bool b, bool a) {
 
 void render_set_fog(bool on, unsigned int bgr) {
     static bool disabled = std::getenv("KWIK_NO_FOG") != nullptr;
-    klog("render_set_fog: on=%d bgr=%06x disabled=%d frame=%ld", on ? 1 : 0, bgr, disabled ? 1 : 0,
-         g_frame_no);
     if (disabled) return;
     g_fog_on = on;
     g_fog_col[0] = (u8)(bgr & 0xFF);

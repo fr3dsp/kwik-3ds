@@ -144,29 +144,20 @@ int main(int argc, char** argv) {
     }
     fs::remove(tmp_dir, ec);
 
-    std::vector<std::pair<uint32_t, uint32_t>> sound_spans(sound_count);
+    std::vector<uint32_t> sound_offsets(sound_count);
     for (int i = 0; i < sound_count; ++i) {
         size_t off_pos = (size_t)image_count * 2 + (size_t)(image_count + i) * 4;
-        uint32_t off = rd32(&in[off_pos]);
-        sound_spans[i] = {off, 0};
+        sound_offsets[i] = rd32(&in[off_pos]);
     }
-    std::vector<uint32_t> all_data_offsets;
-    for (int i = 0; i < image_count; ++i)
-        all_data_offsets.push_back(rd32(&in[(size_t)image_count * 2 + (size_t)i * 4]));
+
+    uint32_t blob_region_start = (uint32_t)in.size();
     for (int i = 0; i < sound_count; ++i)
-        all_data_offsets.push_back(sound_spans[i].first);
-    std::vector<std::vector<uint8_t>> sound_payloads(sound_count);
-    for (int i = 0; i < sound_count; ++i) {
-        uint32_t start = sound_spans[i].first;
-        uint32_t end = (uint32_t)in.size();
-        for (uint32_t cand : all_data_offsets)
-            if (cand > start && cand < end) end = cand;
-        if (start > in.size() || end > in.size() || end < start) {
-            std::fprintf(stderr, "repack_textures: sound %d offset out of range\n", i);
-            return 1;
-        }
-        sound_payloads[i].assign(in.begin() + start, in.begin() + end);
+        blob_region_start = std::min(blob_region_start, sound_offsets[i]);
+    if (sound_count > 0 && blob_region_start > in.size()) {
+        std::fprintf(stderr, "repack_textures: blob region start out of range\n");
+        return 1;
     }
+    std::vector<uint8_t> blob_region(in.begin() + blob_region_start, in.end());
 
     size_t new_header_size = (size_t)image_count * 2 + (size_t)(image_count + sound_count) * 4;
     std::vector<uint8_t> header, data;
@@ -183,10 +174,10 @@ int main(int argc, char** argv) {
         w32(data, (uint32_t)e.payload.size());
         data.insert(data.end(), e.payload.begin(), e.payload.end());
     }
-    for (int i = 0; i < sound_count; ++i) {
-        w32(header, (uint32_t)(data.size() + new_header_size));
-        data.insert(data.end(), sound_payloads[i].begin(), sound_payloads[i].end());
-    }
+    size_t blob_region_new_start = data.size() + new_header_size;
+    for (int i = 0; i < sound_count; ++i)
+        w32(header, (uint32_t)(blob_region_new_start + (sound_offsets[i] - blob_region_start)));
+    data.insert(data.end(), blob_region.begin(), blob_region.end());
 
     std::ofstream out(out_path, std::ios::binary);
     if (!out) {

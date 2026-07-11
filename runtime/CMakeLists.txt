@@ -66,7 +66,7 @@ if(NINTENDO_3DS)
 
     target_compile_options(kwik_runtime PUBLIC -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        target_compile_options(kwik_runtime PUBLIC -O0 -g)
+        target_compile_options(kwik_runtime PUBLIC -Og -g)
     else()
         target_compile_options(kwik_runtime PUBLIC -O2)
     endif()

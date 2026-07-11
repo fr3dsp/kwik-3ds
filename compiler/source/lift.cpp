@@ -1182,7 +1182,18 @@ bool emit_dir(const GameData& gd, const std::string& out_dir) {
     auto render_entry = [&](const CodeEntry* e) {
         std::ostringstream oss;
         emit_function(oss, gd, *e);
-        return oss.str();
+        std::string r = oss.str();
+        if (r.size() > 128 * 1024) {
+            r = "#if defined(__GNUC__) && !defined(__clang__)\n"
+                "#pragma GCC push_options\n"
+                "#pragma GCC optimize (\"O1\")\n"
+                "#endif\n" +
+                r +
+                "#if defined(__GNUC__) && !defined(__clang__)\n"
+                "#pragma GCC pop_options\n"
+                "#endif\n";
+        }
+        return r;
     };
 
     auto pack_by_size = [&](const std::vector<const CodeEntry*>& entries) {
@@ -1306,6 +1317,7 @@ bool emit_dir(const GameData& gd, const std::string& out_dir) {
         data << "const KwikSound* g_sound_table = nullptr;\n";
     }
     data << "int g_sound_count = " << ex.sounds.size() << ";\n";
+    data << "int g_blob_count = " << ex.sound_count << ";\n";
     if (!g_varid_names.empty()) {
         data << "static const char* g_static_varnames_data[] = {\n";
         for (const auto& n : g_varid_names) data << "    " << quote(n) << ",\n";

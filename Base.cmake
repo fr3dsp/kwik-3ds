@@ -81,20 +81,20 @@ if(NINTENDO_3DS)
         if(KWIK_REPACK_TOOL AND KWIK_TEX3DS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp)
             file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp KWIK_IMG_COUNT_LINE
                  REGEX "g_image_count = ")
-            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp KWIK_SND_COUNT_LINE
-                 REGEX "g_sound_count = ")
+            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/game_data.cpp KWIK_BLOB_COUNT_LINE
+                 REGEX "g_blob_count = ")
             string(REGEX MATCH "[0-9]+" KWIK_IMAGE_COUNT "${KWIK_IMG_COUNT_LINE}")
-            string(REGEX MATCH "[0-9]+" KWIK_SOUND_COUNT "${KWIK_SND_COUNT_LINE}")
+            string(REGEX MATCH "[0-9]+" KWIK_BLOB_COUNT "${KWIK_BLOB_COUNT_LINE}")
 
-            if(KWIK_IMAGE_COUNT MATCHES "^[0-9]+$" AND KWIK_SOUND_COUNT MATCHES "^[0-9]+$")
+            if(KWIK_IMAGE_COUNT MATCHES "^[0-9]+$" AND KWIK_BLOB_COUNT MATCHES "^[0-9]+$")
                 add_custom_command(TARGET game POST_BUILD
                     COMMAND ${KWIK_REPACK_TOOL}
                             ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat
                             ${KWIK_SDCARD_APP_DIR}/Assets.dat
-                            ${KWIK_IMAGE_COUNT} ${KWIK_SOUND_COUNT} ${KWIK_TEX3DS}
+                            ${KWIK_IMAGE_COUNT} ${KWIK_BLOB_COUNT} ${KWIK_TEX3DS}
                     COMMENT "kwik: repacking textures to .t3x via ${KWIK_REPACK_TOOL}")
             else()
-                message(WARNING "kwik: could not read g_image_count/g_sound_count from game_data.cpp, falling back to a plain Assets.dat copy")
+                message(WARNING "kwik: could not read g_image_count/g_blob_count from game_data.cpp, falling back to a plain Assets.dat copy")
                 add_custom_command(TARGET game POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
                             ${CMAKE_CURRENT_SOURCE_DIR}/Assets.dat ${KWIK_SDCARD_APP_DIR}/Assets.dat)

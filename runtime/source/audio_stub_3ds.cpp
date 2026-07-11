@@ -219,8 +219,12 @@ static Voice* start_sfx_voice(const unsigned char* data, unsigned size, int type
         render_debug_log("audio: sfx decode FAILED size=%u type=%d", size, type);
         return nullptr;
     }
-    render_debug_log("audio: sfx decoded samples=%zu channels=%d rate=%d", pcm.size(), channels,
-                     rate);
+    static int sfx_log_budget = 20;
+    if (sfx_log_budget > 0) {
+        --sfx_log_budget;
+        render_debug_log("audio: sfx decoded samples=%zu channels=%d rate=%d", pcm.size(),
+                         channels, rate);
+    }
 
     Voice* v = new Voice();
     v->channels = channels;
@@ -436,7 +440,11 @@ GMLFN(audio_play_sound) {
     if (argc < 1) return Value(-1.0);
     int what = (int)(double)args[0];
     bool loop = argc > 2 && gml_truthy(args[2]);
-    render_debug_log("audio: audio_play_sound what=%d loop=%d", what, loop ? 1 : 0);
+    static int play_log_budget = 20;
+    if (play_log_budget > 0) {
+        --play_log_budget;
+        render_debug_log("audio: audio_play_sound what=%d loop=%d", what, loop ? 1 : 0);
+    }
     Voice* v = start_voice(what, loop);
     if (!v) {
         render_debug_log("audio: audio_play_sound FAILED what=%d", what);

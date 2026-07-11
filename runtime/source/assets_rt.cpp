@@ -79,6 +79,8 @@ static void ensure_assets() {
     } else {
         std::fprintf(stderr, "[kwik] could not open %s\n", path);
     }
+    render_debug_log("assets: path='%s' g_image_count=%d g_assets_size=%zu toc_bytes=%zu",
+                     path, g_image_count, g_assets_size, (size_t)g_image_count * 2 * 4);
     g_images.resize(g_image_count);
 }
 
@@ -240,16 +242,19 @@ struct CachedMask {
     MaskSet ms;
     std::vector<unsigned char> bytes;
     int attempts = 0;
+    bool permanent_fail = false;
+    unsigned long long next_retry_frame = 0;
 };
 
 const MaskSet* kwik_sprite_masks(int spr) {
     static std::unordered_map<int, CachedMask> cache;
     CachedMask& slot = cache[spr];
     if (slot.ms.count > 0) return &slot.ms;
-    if (slot.attempts >= 3) return nullptr;
+    if (slot.permanent_fail) return nullptr;
+    if (slot.attempts >= 3 && g_frame_counter < slot.next_retry_frame) return nullptr;
     const KwikSprite* s = kwik_sprite_at(spr);
     if (!s || s->sep_masks != 1 || s->mask_blob < 0) {
-        slot.attempts = 3;
+        slot.permanent_fail = true;
         return nullptr;
     }
     {
@@ -261,9 +266,10 @@ const MaskSet* kwik_sprite_masks(int spr) {
                 render_debug_log("assets: mask blob %d read failed for sprite %d", s->mask_blob,
                                  spr);
             ++slot.attempts;
+            slot.next_retry_frame = g_frame_counter + 180;
             return nullptr;
         }
-        slot.attempts = 3;
+        slot.attempts = 0;
         if (d && type == 4 && size >= 12) {
             auto r32 = [&](int o) {
                 return (unsigned)d[o] | ((unsigned)d[o + 1] << 8) | ((unsigned)d[o + 2] << 16) |
