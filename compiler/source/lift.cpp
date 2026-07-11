@@ -93,6 +93,7 @@ struct LiftCtx {
     int max_depth = 0;
     int warn_count = 0;
     bool needs_exit_label = false;
+    bool uses_statics = false;
 
     LiftCtx(const GameData& g, const CodeEntry& entry) : gd(g), e(entry) {}
 };
@@ -119,11 +120,16 @@ static std::string read_var_expr(LiftCtx& ctx, int spec, const std::string& name
         if (name == "x") return "Value(self->x)";
         if (name == "y") return "Value(self->y)";
     }
+    if (spec == -16) {
+        ctx.uses_statics = true;
+        return "__statics->var(" + std::to_string(varid(name)) + ")";
+    }
     return "kwik_scope_get(self, " + std::to_string(spec) + ", " + std::to_string(varid(name)) + ")";
 }
 
 static void emit_write_var(LiftCtx& ctx, std::ostream* out, int spec, const std::string& name,
                            const std::string& val) {
+    if (spec == -16) ctx.uses_statics = true;
     if (!out) {
         int argn;
         if (!is_argument_n(name, argn) && name != "argument_count" && spec == -7)
@@ -146,6 +152,10 @@ static void emit_write_var(LiftCtx& ctx, std::ostream* out, int spec, const std:
     }
     if (spec == -1 && name == "y") {
         *out << "    self->y = (double)" << val << ";\n";
+        return;
+    }
+    if (spec == -16) {
+        *out << "    __statics->var(" << std::to_string(varid(name)) << ") = " << val << ";\n";
         return;
     }
     *out << "    kwik_scope_set(self, " << spec << ", " << std::to_string(varid(name)) << ", " << val << ");\n";
@@ -615,11 +625,22 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                 if (out) *out << "    " << S(base) << " = kwik_this(self);\n";
             } else if (fn == "@@Other@@") {
                 if (out) *out << "    " << S(base) << " = kwik_other(self);\n";
+            } else if (fn == "@@Global@@") {
+                if (out) *out << "    " << S(base) << " = Value(-5.0);\n";
             } else if (fn == "@@GetInstance@@") {
                 if (out && argcN >= 1 && base != d() - 1)
                     *out << "    " << S(base) << " = " << S(d() - 1) << ";\n";
             } else if (fn == "@@NullObject@@") {
                 if (out) *out << "    " << S(base) << " = Value(-4.0);\n";
+            } else if (fn == "@@SetStatic@@") {
+                ctx.uses_statics = true;
+                if (out)
+                    *out << "    __static_ok = true;\n    " << S(base) << " = Value();\n";
+            } else if (fn == "@@CopyStatic@@") {
+                ctx.uses_statics = true;
+                if (out)
+                    *out << "    kwik_copy_static_from(__statics, " << S(base) << ");\n    "
+                         << S(base) << " = Value();\n";
             } else if (fn == "@@try_hook@@" || fn == "@@try_unhook@@" ||
                        fn == "@@throw@@" || fn == "@@finish_catch@@" ||
                        fn == "@@finish_finally@@") {
@@ -757,10 +778,13 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                     pop(1);
                     break;
                 case -6:
-                    if (out) *out << "    " << S(d()) << " = Value(0.0);\n";
+                    ctx.uses_statics = true;
+                    if (out) *out << "    " << S(d()) << " = Value(__static_ok);\n";
                     push(4);
                     break;
                 case -7:
+                    ctx.uses_statics = true;
+                    if (out) *out << "    __static_ok = true;\n";
                     break;
                 case -8:
                 case -9:
@@ -774,18 +798,16 @@ static void exec_instr(LiftCtx& ctx, size_t i, StackState& st, std::ostream* out
                 case -11: {
                     uint32_t atype = (in.extra >> 24) & 0xFF;
                     int32_t aidx = (int32_t)(in.extra & 0x00FFFFFF);
-                    if (atype == 5) {
-                        std::string fn = gd.function_by_index((uint32_t)aidx);
-                        if (!fn.empty()) {
-                            std::string plain =
-                                fn.rfind("gml_Script_", 0) == 0 ? fn.substr(11) : fn;
-                            if (out)
-                                *out << "    " << S(d()) << " = kwik_make_fnref(&"
-                                     << sanitize(fn) << ", " << quote(plain) << ");\n";
-                        } else {
-                            warn(ctx, in.address, "pushref: unknown script index");
-                            if (out) *out << "    " << S(d()) << " = Value();\n";
-                        }
+                    std::string fn = gd.function_at_call(in.address + 4);
+                    if (fn.empty() && atype == 5) fn = gd.function_by_index((uint32_t)aidx);
+                    if (!fn.empty()) {
+                        std::string plain = fn.rfind("gml_Script_", 0) == 0 ? fn.substr(11) : fn;
+                        if (out)
+                            *out << "    " << S(d()) << " = kwik_make_fnref(&" << sanitize(fn)
+                                 << ", " << quote(plain) << ");\n";
+                    } else if (atype == 5) {
+                        warn(ctx, in.address, "pushref: unknown script index");
+                        if (out) *out << "    " << S(d()) << " = Value();\n";
                     } else {
                         if (out) *out << "    " << S(d()) << " = " << aidx << ";\n";
                     }
@@ -859,6 +881,11 @@ std::string lift_code_entry(const GameData& gd, const CodeEntry& e) {
     out << "    (void)__a; (void)__an;\n";
     for (const std::string& l : ctx.locals) out << "    Value loc_" << sanitize(l) << ";\n";
     out << "    Value __s[" << (ctx.max_depth + 4) << "]; (void)__s;\n";
+    if (ctx.uses_statics)
+        out << "    static std::shared_ptr<Instance> __statics_sp = kwik_make_statics(&"
+            << sanitize(ctx.e.name) << ");\n"
+               "    Instance* __statics = __statics_sp.get(); (void)__statics;\n"
+               "    static bool __static_ok = false; (void)__static_ok;\n";
     out << body.str();
     if (ctx.needs_exit_label) out << "  L_exit: ;\n";
     out << "    return Value();\n";

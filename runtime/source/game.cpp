@@ -67,34 +67,35 @@ static void build_family_members() {
     }
 }
 
+static void index_new_instance(Instance* inst) {
+    if (inst->dead || inst->is_struct) return;
+    g_id_index[inst->id] = inst;
+    g_type_index[inst->object_index].push_back(inst);
+
+    double l, t, r, b;
+    int cx0, cy0, cx1, cy1;
+    if (inst_bbox(inst, inst->x, inst->y, l, t, r, b)) {
+        cx0 = (int)std::floor(l / kGridCellSize);
+        cy0 = (int)std::floor(t / kGridCellSize);
+        cx1 = (int)std::floor(r / kGridCellSize);
+        cy1 = (int)std::floor(b / kGridCellSize);
+    } else {
+        cx0 = cx1 = (int)std::floor(inst->x / kGridCellSize);
+        cy0 = cy1 = (int)std::floor(inst->y / kGridCellSize);
+    }
+    cx1 = std::min(cx1, cx0 + 32);
+    cy1 = std::min(cy1, cy0 + 32);
+    for (int gy = cy0; gy <= cy1; ++gy)
+        for (int gx = cx0; gx <= cx1; ++gx)
+            g_grid_index[grid_cell_key(gx, gy)].push_back(inst);
+}
+
 static void rebuild_instance_index() {
     if (!g_family_built) build_family_members();
     g_id_index.clear();
     g_type_index.clear();
     g_grid_index.clear();
-    for (auto& sp : g_instances) {
-        Instance* inst = sp.get();
-        if (inst->dead || inst->is_struct) continue;
-        g_id_index[inst->id] = inst;
-        g_type_index[inst->object_index].push_back(inst);
-
-        double l, t, r, b;
-        int cx0, cy0, cx1, cy1;
-        if (inst_bbox(inst, inst->x, inst->y, l, t, r, b)) {
-            cx0 = (int)std::floor(l / kGridCellSize);
-            cy0 = (int)std::floor(t / kGridCellSize);
-            cx1 = (int)std::floor(r / kGridCellSize);
-            cy1 = (int)std::floor(b / kGridCellSize);
-        } else {
-            cx0 = cx1 = (int)std::floor(inst->x / kGridCellSize);
-            cy0 = cy1 = (int)std::floor(inst->y / kGridCellSize);
-        }
-        cx1 = std::min(cx1, cx0 + 32);
-        cy1 = std::min(cy1, cy0 + 32);
-        for (int gy = cy0; gy <= cy1; ++gy)
-            for (int gx = cx0; gx <= cx1; ++gx)
-                g_grid_index[grid_cell_key(gx, gy)].push_back(inst);
-    }
+    for (auto& sp : g_instances) index_new_instance(sp.get());
 }
 
 template <typename F>
@@ -843,6 +844,7 @@ Value kwik_create_instance(int obj_index, double x, double y, double depth, bool
     if (use_depth) sp->depth = depth;
     g_instances.push_back(sp);
     Instance* raw = sp.get();
+    index_new_instance(raw);
     fire(raw, EVK_PRE_CREATE, 0);
     fire(raw, EVK_CREATE, 0);
     return Value((double)raw->id);
@@ -2786,9 +2788,11 @@ static void run_collisions() {
 }
 
 static void sweep_dead() {
+    size_t before = g_instances.size();
     g_instances.erase(std::remove_if(g_instances.begin(), g_instances.end(),
                                      [](const std::shared_ptr<Instance>& sp) { return sp->dead; }),
                       g_instances.end());
+    if (g_instances.size() != before) rebuild_instance_index();
 }
 
 static void update_camera_follow() {
@@ -2844,6 +2848,7 @@ static void load_room(int index, bool clear_persistent) {
         if (!clear_persistent && sp->persistent) kept.push_back(sp);
     }
     g_instances = std::move(kept);
+    rebuild_instance_index();
     size_t persist_count = g_instances.size();
 
     g_current_room = index;
@@ -2908,6 +2913,7 @@ static void load_room(int index, bool clear_persistent) {
         g_instances.push_back(sp);
         created.push_back(sp.get());
     }
+    rebuild_instance_index();
 
     for (size_t i = 0; i < created.size(); ++i) {
         fire(created[i], EVK_PRE_CREATE, 0);

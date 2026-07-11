@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 #include <vector>
 #include <deque>
 #include <algorithm>
@@ -24,6 +25,7 @@ struct LoadedImage {
     int h = 0;
     bool tried = false;
     bool ok = false;
+    int fails = 0;
 };
 
 static std::FILE* g_assets_file = nullptr;
@@ -31,10 +33,26 @@ static size_t g_assets_size = 0;
 static bool g_assets_tried = false;
 static std::vector<LoadedImage> g_images;
 
+static const char* g_read_fail = "";
+static int g_read_errno = 0;
+
 static bool read_range(size_t o, size_t len, void* out) {
-    if (!g_assets_file || o + len > g_assets_size) return false;
-    if (std::fseek(g_assets_file, (long)o, SEEK_SET) != 0) return false;
-    return std::fread(out, 1, len, g_assets_file) == len;
+    if (!g_assets_file) { g_read_fail = "nofile"; return false; }
+    if (o + len > g_assets_size) { g_read_fail = "bounds"; return false; }
+    std::clearerr(g_assets_file);
+    errno = 0;
+    if (std::fseek(g_assets_file, (long)o, SEEK_SET) != 0) {
+        g_read_fail = "seek";
+        g_read_errno = errno;
+        return false;
+    }
+    size_t got = std::fread(out, 1, len, g_assets_file);
+    if (got != len) {
+        g_read_fail = "short";
+        g_read_errno = errno;
+        return false;
+    }
+    return true;
 }
 
 static uint32_t rd32(size_t o) {
@@ -78,7 +96,15 @@ const unsigned char* kwik_sound_blob(int blob_index, unsigned int& size, int& ty
     if (scratch.capacity() > (1u << 20) && sz * 2 < scratch.capacity())
         std::vector<unsigned char>().swap(scratch);
     scratch.resize(sz);
-    if (sz && !read_range(off + 8, sz, scratch.data())) return nullptr;
+    if (sz && !read_range(off + 8, sz, scratch.data())) {
+        static int log_budget = 16;
+        if (log_budget > 0) {
+            --log_budget;
+            render_debug_log("assets: blob %d read failed (%s errno=%d off=%u sz=%u)",
+                             blob_index, g_read_fail, g_read_errno, (unsigned)off, sz);
+        }
+        return nullptr;
+    }
     size = sz;
     return scratch.data();
 }
@@ -162,38 +188,50 @@ static LoadedImage& load_image(int index) {
         return img;
     }
 
+    auto fail_soft = [&](const char* why) -> LoadedImage& {
+        if (img.fails < 2)
+            render_debug_log("assets: image %d load failed (%s %s errno=%d), attempt %d", index,
+                             why, g_read_fail, g_read_errno, img.fails + 1);
+        if (++img.fails >= 8) img.tried = true;
+        return img;
+    };
+
     size_t off = rd32((size_t)g_image_count * 2 + (size_t)index * 4);
     if (off == 0 || off + 16 > g_assets_size) { img.tried = true; return img; }
     uint16_t format = rd16(off + 8);
     uint32_t payload_size = rd32(off + 12);
     if (off + 16 + payload_size > g_assets_size) { img.tried = true; return img; }
     std::vector<unsigned char> payload(payload_size);
-    if (payload_size && !read_range(off + 16, payload_size, payload.data())) {
-        img.tried = true;
-        return img;
-    }
+    if (payload_size && !read_range(off + 16, payload_size, payload.data()))
+        return fail_soft("read");
 
     unsigned int tex = 0;
     int w = 0, h = 0;
     if (format == 1) {
         tex = render_upload_texture_t3x(payload.data(), payload_size);
-        if (tex == 0) return img;
+        if (tex == 0) return fail_soft("t3x");
         w = rd16(off);
         h = rd16(off + 2);
     } else {
         int ch;
         unsigned char* pixels =
             stbi_load_from_memory(payload.data(), (int)payload_size, &w, &h, &ch, 4);
-        if (!pixels) { img.tried = true; return img; }
+        if (!pixels) return fail_soft("decode");
         tex = render_upload_texture(pixels, w, h);
         stbi_image_free(pixels);
-        if (tex == 0) return img;
+        if (tex == 0) return fail_soft("upload");
+        int lw = rd16(off), lh = rd16(off + 2);
+        if (lw > 0 && lh > 0) {
+            w = lw;
+            h = lh;
+        }
     }
     img.tex = tex;
     img.w = w;
     img.h = h;
     img.ok = true;
     img.tried = true;
+    img.fails = 0;
     render_register_evictable(tex, invalidate_loaded_image, (void*)(intptr_t)index);
     return img;
 }
@@ -201,18 +239,31 @@ static LoadedImage& load_image(int index) {
 struct CachedMask {
     MaskSet ms;
     std::vector<unsigned char> bytes;
+    int attempts = 0;
 };
 
 const MaskSet* kwik_sprite_masks(int spr) {
     static std::unordered_map<int, CachedMask> cache;
-    auto it = cache.find(spr);
-    if (it != cache.end()) return it->second.ms.count > 0 ? &it->second.ms : nullptr;
     CachedMask& slot = cache[spr];
+    if (slot.ms.count > 0) return &slot.ms;
+    if (slot.attempts >= 3) return nullptr;
     const KwikSprite* s = kwik_sprite_at(spr);
-    if (s && s->sep_masks == 1 && s->mask_blob >= 0) {
+    if (!s || s->sep_masks != 1 || s->mask_blob < 0) {
+        slot.attempts = 3;
+        return nullptr;
+    }
+    {
         unsigned int size = 0;
         int type = 0;
         const unsigned char* d = kwik_sound_blob(s->mask_blob, size, type);
+        if (!d) {
+            if (slot.attempts == 0)
+                render_debug_log("assets: mask blob %d read failed for sprite %d", s->mask_blob,
+                                 spr);
+            ++slot.attempts;
+            return nullptr;
+        }
+        slot.attempts = 3;
         if (d && type == 4 && size >= 12) {
             auto r32 = [&](int o) {
                 return (unsigned)d[o] | ((unsigned)d[o + 1] << 8) | ((unsigned)d[o + 2] << 16) |

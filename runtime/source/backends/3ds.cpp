@@ -1576,6 +1576,11 @@ void render_set_fog(bool on, unsigned int bgr) {
 int render_gui_width() { return g_gui_w; }
 int render_gui_height() { return g_gui_h; }
 
+void render_set_gui_size(int w, int h) {
+    if (w > 0) g_gui_w = w;
+    if (h > 0) g_gui_h = h;
+}
+
 void render_set_window_size(int, int) {}
 void render_set_fullscreen(bool) {}
 bool render_get_fullscreen() { return true; }

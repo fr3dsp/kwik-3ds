@@ -12,6 +12,7 @@
 #endif
 
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <map>
 
@@ -160,6 +161,24 @@ static std::vector<uint8_t> crop_canvas(const std::map<int, Page>& pages, int te
     return canvas;
 }
 
+static void downscale_cap(std::vector<uint8_t>& rgba, int& w, int& h) {
+    const int cap = 1024;
+    while (w > cap || h > cap) {
+        int nw = std::max(1, w / 2);
+        int nh = std::max(1, h / 2);
+        std::vector<uint8_t> out((size_t)nw * nh * 4);
+        for (int y = 0; y < nh; ++y) {
+            const uint8_t* srow = &rgba[((size_t)y * 2) * w * 4];
+            uint8_t* drow = &out[(size_t)y * nw * 4];
+            for (int x = 0; x < nw; ++x)
+                std::memcpy(&drow[(size_t)x * 4], &srow[(size_t)x * 2 * 4], 4);
+        }
+        rgba.swap(out);
+        w = nw;
+        h = nh;
+    }
+}
+
 static std::vector<uint8_t> build_image_entry(int w, int h, int hot_x, int hot_y,
                                               const std::vector<uint8_t>& png) {
     std::vector<uint8_t> e;
@@ -291,7 +310,9 @@ bool extract_assets(const GameData& gd, const std::string& out_dir, AssetExtract
                     }
                 }
                 std::vector<uint8_t> png;
-                write_png(png, cw, ch, canvas);
+                int pw = cw, ph = ch;
+                downscale_cap(canvas, pw, ph);
+                write_png(png, pw, ph, canvas);
                 images.push_back(build_image_entry(cw, ch, info.origin_x, info.origin_y, png));
                 info.frame_count++;
             }
@@ -313,7 +334,9 @@ bool extract_assets(const GameData& gd, const std::string& out_dir, AssetExtract
             if (tw <= 0 || th <= 0) { tw = 1; th = 1; }
             std::vector<uint8_t> canvas = crop_canvas(pages, texIdx, tsx, tsy, tw, th, 0, 0, tw, th);
             std::vector<uint8_t> png;
-            write_png(png, tw, th, canvas);
+            int fpw = tw, fph = th;
+            downscale_cap(canvas, fpw, fph);
+            write_png(png, fpw, fph, canvas);
             fi.atlas_image = images.size();
             images.push_back(build_image_entry(tw, th, 0, 0, png));
 
@@ -366,7 +389,9 @@ bool extract_assets(const GameData& gd, const std::string& out_dir, AssetExtract
             std::vector<uint8_t> canvas = crop_canvas(pages, texIdx, srcX, srcY, srcW, srcH, 0, 0,
                                                       srcW, srcH);
             std::vector<uint8_t> png;
-            write_png(png, srcW, srcH, canvas);
+            int tpw = srcW, tph = srcH;
+            downscale_cap(canvas, tpw, tph);
+            write_png(png, tpw, tph, canvas);
             TilesetInfo ti;
             ti.image = (int)images.size();
             ti.tile_w = tile_w;
