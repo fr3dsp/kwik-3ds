@@ -255,6 +255,7 @@ struct Vtx {
 static long g_draw_calls_this_frame = 0;
 static long g_frame_no = 0;
 static bool g_in_frame = false;
+static int g_draws_since_split = 0;
 
 static u8* g_frame_arena = nullptr;
 static size_t g_frame_arena_size = 0;
@@ -295,6 +296,10 @@ static void submit(const Vtx* verts, int nverts, const u16* idx, int nidx, C3D_T
 
     for (int i = 0; i < MTX_MODE_COUNT; ++i) MtxStack_Update(&g_mtx_stacks[i]);
     C3D_DrawElements(GPU_TRIANGLES, nidx, C3D_UNSIGNED_SHORT, ibuf);
+    if (g_in_frame && ++g_draws_since_split >= 384) {
+        C3D_FrameSplit(0);
+        g_draws_since_split = 0;
+    }
 }
 
 static u8 vcol_component(unsigned int bgr, int shift) { return (u8)((bgr >> shift) & 0xFF); }
@@ -1234,7 +1239,7 @@ bool render_init(const char* title, int width, int height, unsigned int bg_color
     load_input_map();
     klog("input.ini loaded");
 
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
+    if (!C3D_Init(2 * C3D_DEFAULT_CMDBUF_SIZE)) {
         klog("C3D_Init FAILED");
         return false;
     }
@@ -1331,6 +1336,7 @@ void render_begin_frame() {
     evict_bump_frame();
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     g_in_frame = true;
+    g_draws_since_split = 0;
     g_frame_arena_offset = 0;
     g_target_stack.clear();
     g_xf_stack.clear();

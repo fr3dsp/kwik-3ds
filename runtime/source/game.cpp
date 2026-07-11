@@ -3047,8 +3047,26 @@ static void draw_world() {
             for (int t = 0; t < l.tile_count; ++t) {
                 int ti = l.tile_first + t;
                 if (ti < 0 || ti >= cur->tile_count) continue;
-                items.push_back({cur->tiles[ti].depth, 0, (long long)ti, nullptr, nullptr,
-                                 &cur->tiles[ti], l.x, l.y, false});
+                const RoomTile& rt = cur->tiles[ti];
+                if (rt.angle == 0) {
+                    double tw = rt.w, th = rt.h;
+                    if (rt.whole) {
+                        int sw = 0, sh = 0;
+                        if (kwik_sprite_size(rt.sprite, sw, sh)) {
+                            tw = sw;
+                            th = sh;
+                        }
+                    }
+                    tw *= std::fabs(rt.scale_x);
+                    th *= std::fabs(rt.scale_y);
+                    double tx0 = rt.x + l.x - tw;
+                    double ty0 = rt.y + l.y - th;
+                    if (tx0 > cam.x + cam.w || rt.x + l.x + tw < cam.x - tw ||
+                        ty0 > cam.y + cam.h || rt.y + l.y + th < cam.y - th)
+                        continue;
+                }
+                items.push_back({rt.depth, 0, (long long)ti, nullptr, nullptr,
+                                 &rt, l.x, l.y, false});
             }
         } else if (l.type == 4 && l.tileset >= 0 && l.grid_blob >= 0 && l.grid_w > 0) {
             items.push_back({l.depth, 0, (long long)l.id, nullptr, &l, nullptr, l.x, l.y, true});
