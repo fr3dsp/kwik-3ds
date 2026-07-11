@@ -919,6 +919,16 @@ void render_draw_rectangle_color(double x1, double y1, double x2, double y2, uns
         batch_quad(white_c3dtex(), v);
         return;
     }
+    static long big_rect_log = 60;
+    if (big_rect_log > 0 && std::fabs(x2 - x1) > 100 && std::fabs(y2 - y1) > 75) {
+        --big_rect_log;
+        render_debug_log(
+            "bigrect frame=%ld xy=(%.1f,%.1f)-(%.1f,%.1f) c=(%06x,%06x,%06x,%06x) alpha=%.3f "
+            "blend=(src=%d,dst=%d,asrc=%d,adst=%d) colormask=(%d,%d,%d,%d) fog_on=%d",
+            g_frame_no, x1, y1, x2, y2, c1, c2, c3, c4, g_alpha, g_blend_src, g_blend_dst,
+            g_blend_asrc, g_blend_adst, g_colormask[0] ? 1 : 0, g_colormask[1] ? 1 : 0,
+            g_colormask[2] ? 1 : 0, g_colormask[3] ? 1 : 0, g_fog_on ? 1 : 0);
+    }
     Vtx v[4] = {mkv(x1, y1, c1, g_alpha), mkv(x2 + 1, y1, c2, g_alpha),
                mkv(x2 + 1, y2 + 1, c3, g_alpha), mkv(x1, y2 + 1, c4, g_alpha)};
     batch_quad(white_c3dtex(), v);

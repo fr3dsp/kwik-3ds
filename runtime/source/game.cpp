@@ -3065,10 +3065,10 @@ static void draw_world() {
                     }
                     tw *= std::fabs(rt.scale_x);
                     th *= std::fabs(rt.scale_y);
-                    double tx0 = rt.x + l.x - tw;
-                    double ty0 = rt.y + l.y - th;
-                    if (tx0 > cam.x + cam.w || rt.x + l.x + tw < cam.x - tw ||
-                        ty0 > cam.y + cam.h || rt.y + l.y + th < cam.y - th)
+
+                    double x0 = rt.x + l.x, y0 = rt.y + l.y;
+                    if (x0 + tw < cam.x - tw || x0 - tw > cam.x + cam.w + tw ||
+                        y0 + th < cam.y - th || y0 - th > cam.y + cam.h + th)
                         continue;
                 }
                 items.push_back({rt.depth, 0, (long long)ti, nullptr, nullptr,
@@ -3113,6 +3113,15 @@ static void draw_world() {
             unsigned int blend = bg.color & 0xFFFFFF;
             double alpha = (((bg.color >> 24) & 0xFF) / 255.0) * bg.alpha;
             if (bg.sprite < 0) {
+                static int bglog_budget = 60;
+                if (bglog_budget > 0) {
+                    --bglog_budget;
+                    render_debug_log(
+                        "bglayer '%s' id=%d color=0x%08x bg.alpha=%.3f computed_alpha=%.3f "
+                        "cam=(%.1f,%.1f %gx%g) el_visible=%d",
+                        bg.name.c_str(), bg.id, bg.color, bg.alpha, alpha, cam.x, cam.y, cam.w,
+                        cam.h, (int)bg.el_visible);
+                }
                 if (alpha > 0.0) {
                     double sa = render_get_alpha();
                     render_set_alpha(alpha);

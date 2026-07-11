@@ -430,7 +430,16 @@ void kwik_draw_sprite_general(int spr, int sub, double x, double y, double xs, d
     int frame = frame_of(spr, sub, &s);
     if (frame < 0) return;
     LoadedImage& img = load_image(frame);
-    if (!img.ok) return;
+    if (!img.ok) {
+        static long spr_fail_log = 40;
+        if (spr_fail_log > 0) {
+            --spr_fail_log;
+            render_debug_log("sprite draw skipped (img not ok): spr=%d '%s' frame=%d xy=(%.1f,%.1f) "
+                             "xs=%.2f ys=%.2f alpha=%.3f",
+                             spr, s->name ? s->name : "?", frame, x, y, xs, ys, alpha);
+        }
+        return;
+    }
     if (s->tile_repeat && angle == 0 && img.w > 0 && img.h > 0 &&
         (std::fabs(xs) != 1.0 || std::fabs(ys) != 1.0)) {
         double totw = img.w * std::fabs(xs), toth = img.h * std::fabs(ys);
@@ -446,6 +455,17 @@ void kwik_draw_sprite_general(int spr, int sub, double x, double y, double xs, d
             }
         }
         return;
+    }
+    double eff_w = img.w * std::fabs(xs), eff_h = img.h * std::fabs(ys);
+    if (eff_w > 100 && eff_h > 75) {
+        static long scaled_log = 60;
+        if (scaled_log > 0) {
+            --scaled_log;
+            render_debug_log("sprite_ext_scaled spr=%d '%s' frame=%d xy=(%.1f,%.1f) img=(%d,%d) "
+                             "xs=%.2f ys=%.2f eff=(%.1f,%.1f) blend=%06x alpha=%.3f angle=%.1f",
+                             spr, s->name ? s->name : "?", frame, x, y, img.w, img.h, xs, ys, eff_w,
+                             eff_h, blend, alpha, angle);
+        }
     }
     render_draw_quad(img.tex, x, y, img.w, img.h, s->origin_x, s->origin_y, xs, ys, angle, 0, 0, 1,
                      1, blend, alpha);
@@ -475,6 +495,14 @@ void kwik_draw_sprite_stretched(int spr, int sub, double x, double y, double w, 
     int frame = frame_of(spr, sub, &s);
     if (frame < 0) return;
     LoadedImage& img = load_image(frame);
+    static long stretch_log = 60;
+    if (stretch_log > 0 && std::fabs(w) > 100 && std::fabs(h) > 75) {
+        --stretch_log;
+        render_debug_log("sprite_stretched spr=%d '%s' frame=%d xy=(%.1f,%.1f) wh=(%.1f,%.1f) "
+                         "blend=%06x alpha=%.3f img.ok=%d img.w=%d img.h=%d",
+                         spr, s->name ? s->name : "?", frame, x, y, w, h, blend, alpha, img.ok,
+                         img.w, img.h);
+    }
     if (!img.ok || img.w <= 0 || img.h <= 0) return;
     render_draw_quad(img.tex, x, y, w, h, 0, 0, 1, 1, 0, 0, 0, 1, 1, blend, alpha);
 }

@@ -116,6 +116,12 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        if (e.w < 8 || e.h < 8) {
+            e.payload.assign(payload, payload + size);
+            ++kept;
+            continue;
+        }
+
         fs::path png_path = tmp_dir / ("img_" + std::to_string(i) + ".png");
         fs::path t3x_path = tmp_dir / ("img_" + std::to_string(i) + ".t3x");
         if (!write_file(png_path.string(), payload, size)) {
