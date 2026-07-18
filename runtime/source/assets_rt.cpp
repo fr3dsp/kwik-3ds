@@ -16,6 +16,7 @@
 #include <vector>
 #include <deque>
 #include <algorithm>
+#include <unordered_map>
 
 namespace gml {
 
@@ -180,6 +181,40 @@ static void invalidate_loaded_image(void* user_data) {
     g_images[index].tex = 0;
 }
 
+#ifdef __3DS__
+struct PayloadCacheEntry {
+    std::vector<unsigned char> bytes;
+    unsigned long long last_used = 0;
+};
+static std::unordered_map<int, PayloadCacheEntry> g_payload_cache;
+static size_t g_payload_cache_bytes = 0;
+static const size_t kPayloadCacheBudget = 4u * 1024u * 1024u;
+
+static void payload_cache_evict_to_fit(size_t need) {
+    while (g_payload_cache_bytes + need > kPayloadCacheBudget && !g_payload_cache.empty()) {
+        auto oldest = g_payload_cache.begin();
+        for (auto it = g_payload_cache.begin(); it != g_payload_cache.end(); ++it)
+            if (it->second.last_used < oldest->second.last_used) oldest = it;
+        g_payload_cache_bytes -= oldest->second.bytes.size();
+        g_payload_cache.erase(oldest);
+    }
+}
+
+static const std::vector<unsigned char>* payload_cache_get(int index) {
+    auto it = g_payload_cache.find(index);
+    if (it == g_payload_cache.end()) return nullptr;
+    it->second.last_used = g_frame_counter;
+    return &it->second.bytes;
+}
+
+static void payload_cache_put(int index, std::vector<unsigned char>&& bytes) {
+    if (bytes.size() > kPayloadCacheBudget) return;
+    payload_cache_evict_to_fit(bytes.size());
+    g_payload_cache_bytes += bytes.size();
+    g_payload_cache[index] = {std::move(bytes), g_frame_counter};
+}
+#endif
+
 static LoadedImage& load_image(int index) {
     ensure_assets();
     static LoadedImage dummy;
@@ -203,21 +238,34 @@ static LoadedImage& load_image(int index) {
     uint16_t format = rd16(off + 8);
     uint32_t payload_size = rd32(off + 12);
     if (off + 16 + payload_size > g_assets_size) { img.tried = true; return img; }
-    std::vector<unsigned char> payload(payload_size);
-    if (payload_size && !read_range(off + 16, payload_size, payload.data()))
-        return fail_soft("read");
+
+    const unsigned char* payload_ptr = nullptr;
+    std::vector<unsigned char> payload_storage;
+#ifdef __3DS__
+    if (const std::vector<unsigned char>* cached = payload_cache_get(index))
+        payload_ptr = cached->data();
+#endif
+    if (!payload_ptr) {
+        payload_storage.resize(payload_size);
+        if (payload_size && !read_range(off + 16, payload_size, payload_storage.data()))
+            return fail_soft("read");
+#ifdef __3DS__
+        payload_cache_put(index, std::vector<unsigned char>(payload_storage));
+#endif
+        payload_ptr = payload_storage.data();
+    }
 
     unsigned int tex = 0;
     int w = 0, h = 0;
     if (format == 1) {
-        tex = render_upload_texture_t3x(payload.data(), payload_size);
+        tex = render_upload_texture_t3x(payload_ptr, payload_size);
         if (tex == 0) return fail_soft("t3x");
         w = rd16(off);
         h = rd16(off + 2);
     } else {
         int ch;
         unsigned char* pixels =
-            stbi_load_from_memory(payload.data(), (int)payload_size, &w, &h, &ch, 4);
+            stbi_load_from_memory(payload_ptr, (int)payload_size, &w, &h, &ch, 4);
         if (!pixels) return fail_soft("decode");
         tex = render_upload_texture(pixels, w, h);
         stbi_image_free(pixels);
